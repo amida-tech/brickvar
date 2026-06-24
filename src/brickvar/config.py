@@ -92,3 +92,13 @@ class ConfigManager:  # pylint: disable=too-few-public-methods
                 logger.warning("Unresolved variable(s) in %s: %s", filepath, ", ".join(unresolved))
             content = Template(content).safe_substitute(**variables)
         return json.loads(content)
+
+
+def configure_json(filepath: str, *, dbutils=None, var_filepath: str = None) -> dict:
+    """Read a JSON config file and resolve its ${VAR} placeholders in one call.
+
+    Convenience wrapper that instantiates a ConfigManager with ``dbutils`` and returns
+    ``read_json(filepath, var_filepath=var_filepath)``. ``dbutils`` is only needed when the
+    variables file contains Key Vault secrets. See ConfigManager.read_json for details.
+    """
+    return ConfigManager(dbutils=dbutils).read_json(filepath, var_filepath=var_filepath)

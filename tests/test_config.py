@@ -1,6 +1,6 @@
 """Tests for brickvar.config.ConfigManager."""
 
-from brickvar import ConfigManager
+from brickvar import ConfigManager, configure_json
 from brickvar.config import unresolved_variables
 
 
@@ -161,6 +161,35 @@ def test_read_json_warns_on_unresolved_variable(mock_dbutils, write_json, mocker
     # The warning names the unresolved variable, not the resolved one.
     assert "MISSING" in warning.call_args.args[-1]
     assert "PROVIDED" not in warning.call_args.args[-1]
+
+
+def test_configure_json_resolves_with_variables(mock_dbutils, write_json):
+    """configure_json reads the file and substitutes ${VAR} placeholders in one call."""
+    var_path = write_json("vars.json", {"HOST": "example.com", "DB": "grads"})
+    doc_path = write_json("doc.json", {"endpoint": "https://${HOST}", "database": "${DB}"})
+
+    result = configure_json(doc_path, dbutils=mock_dbutils, var_filepath=var_path)
+
+    assert result == {"endpoint": "https://example.com", "database": "grads"}
+
+
+def test_configure_json_without_variables(write_json):
+    """configure_json with no variables file (and no dbutils) returns the JSON unchanged."""
+    doc_path = write_json("doc.json", {"a": 1, "b": "${UNTOUCHED}"})
+
+    result = configure_json(doc_path)
+
+    assert result == {"a": 1, "b": "${UNTOUCHED}"}
+
+
+def test_configure_json_resolves_secret(mock_dbutils, write_json):
+    """configure_json passes dbutils through to ConfigManager so Key Vault secrets resolve."""
+    var_path = write_json("vars.json", {"TOKEN": {"scope": "s", "key": "k"}})
+    doc_path = write_json("doc.json", {"token": "${TOKEN}"})
+
+    result = configure_json(doc_path, dbutils=mock_dbutils, var_filepath=var_path)
+
+    assert result == {"token": "s_k_value"}
 
 
 def test_unresolved_variables_helper():
