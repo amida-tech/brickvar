@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brickvar"
-version = "0.0.1"
+version = "0.0.2"
 description = "Resolve Databricks config variables from literals, environment variables, and Azure Key Vault secrets, and substitute them into JSON config files."
 readme = "README.md"
 requires-python = ">=3.9"

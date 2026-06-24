@@ -23,10 +23,19 @@ pip install brickvar
 ## Usage
 
 ```python
+from brickvar import configure_json
+
+# Read a JSON file and substitute its ${VAR} placeholders from a variables file,
+# in one call. dbutils is provided by the Databricks runtime and is required only
+# when the variables file contains Key Vault secret entries.
+spec = configure_json("spec.json", dbutils=dbutils, var_filepath="variables.json")
+```
+
+For finer-grained control, use the `ConfigManager` class directly:
+
+```python
 from brickvar import ConfigManager
 
-# dbutils is provided by the Databricks runtime; required only when a
-# variables file contains Key Vault secret entries.
 cfg = ConfigManager(dbutils=dbutils)
 
 # Resolve a variables file to a dict.
