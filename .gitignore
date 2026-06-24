@@ -23,3 +23,6 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Local working notes (not for public history)
+CLAUDE.md

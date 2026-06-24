@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brickvar"
+version = "0.0.1"
+description = "Resolve Databricks config variables from literals, environment variables, and Azure Key Vault secrets, and substitute them into JSON config files."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Afsin Ustundag", email = "afsin@amida.com" }]
+keywords = ["databricks", "config", "configuration", "secrets", "azure", "key-vault"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries",
+]
+# No runtime dependencies: dbutils is supplied by the Databricks host at call time.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-mock", "pytest-cov", "black", "pylint", "build", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/amida-tech/brickvar"
+Repository = "https://github.com/amida-tech/brickvar"
+Issues = "https://github.com/amida-tech/brickvar/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 120
+target-version = ["py39"]
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

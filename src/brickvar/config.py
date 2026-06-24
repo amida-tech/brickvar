@@ -1,0 +1,94 @@
+"""Read JSON config files and resolve their variables.
+
+Variables come from literals, environment variables, and Azure Key Vault secrets
+(read through the Databricks ``dbutils.secrets`` API), and are substituted into the
+``${VAR}`` placeholders of arbitrary JSON files.
+"""
+
+import os
+import json
+import logging
+from string import Template
+
+logger = logging.getLogger(__name__)
+
+
+def unresolved_variables(content, provided):
+    """Variable names referenced as $name/${name} in content that provided does not supply."""
+    referenced = {match.group("named") or match.group("braced") for match in Template.pattern.finditer(content)}
+    referenced.discard(None)  # escaped ($$) and invalid ($) matches contribute None
+    return sorted(referenced - set(provided))
+
+
+class ConfigManager:  # pylint: disable=too-few-public-methods
+    """Reads JSON files and substitutes their ${VAR} placeholders from a variables file."""
+
+    def __init__(self, dbutils=None):
+        """Initialize ConfigManager with the Databricks utilities used to read secrets.
+
+        ``dbutils`` is only required when a variables file contains Key Vault secret
+        entries; literal- and environment-only files resolve without it.
+        """
+        self.dbutils = dbutils
+
+    def read_variables(self, filepath: str) -> dict:
+        """Read configuration variables from a JSON file.
+
+        Each entry maps a name to a value given in one of three forms: a literal string; an
+        environment-variable reference ``{"env": "NAME"}`` resolved from os.environ; or an Azure
+        Key Vault secret ``{"scope": ..., "key": ..., "base"?: ...}`` read via dbutils.
+
+        Resolution is two-pass so entries can reference each other: the first pass resolves the
+        literal and environment values, and the second resolves the secrets, substituting any
+        ``${VAR}`` in their scope/key/base from the already-resolved first-pass values (e.g. a
+        secret whose scope comes from an environment variable). Unknown ``${VAR}`` are left intact,
+        so plain literal scopes are unaffected.
+        """
+        with open(filepath, encoding="utf-8") as f:
+            content = json.load(f)
+        result = {}
+
+        # First pass: literal and environment values, which secret entries may reference.
+        for var_name, var_spec in content.items():
+            if isinstance(var_spec, str):
+                result[var_name] = Template(var_spec).safe_substitute(**result)
+            elif isinstance(var_spec, dict) and "env" in var_spec:
+                extra = set(var_spec) - {"env"}
+                if extra:
+                    logger.error("Variable %r: env entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
+                result[var_name] = os.environ[var_spec["env"]]
+
+        # Second pass: Key Vault secrets, whose scope/key/base may reference first-pass values.
+        for var_name, var_spec in content.items():
+            if not isinstance(var_spec, dict) or "env" in var_spec:
+                continue
+            extra = set(var_spec) - {"scope", "key", "base"}
+            if extra:
+                logger.error("Variable %r: secret entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
+            if ("scope" in var_spec) != ("key" in var_spec):
+                logger.error("Variable %r: secret entry needs both 'scope' and 'key'; one is missing", var_name)
+            scope = var_spec.get("scope")
+            key = var_spec.get("key")
+            if scope and key:
+                value = self.dbutils.secrets.get(
+                    Template(scope).safe_substitute(**result),
+                    Template(key).safe_substitute(**result),
+                )
+                base = var_spec.get("base")
+                result[var_name] = base.format(value) if base else value
+        return result
+
+    def read_json(self, filepath: str, var_filepath: str = None) -> dict:
+        """Read a JSON file, substituting ${VAR} placeholders from var_filepath when given.
+
+        Any placeholder the variables file does not supply is left intact and logged as a warning.
+        """
+        with open(filepath, encoding="utf-8") as f:
+            content = f.read()
+        if var_filepath is not None:
+            variables = self.read_variables(var_filepath)
+            unresolved = unresolved_variables(content, variables)
+            if unresolved:
+                logger.warning("Unresolved variable(s) in %s: %s", filepath, ", ".join(unresolved))
+            content = Template(content).safe_substitute(**variables)
+        return json.loads(content)
