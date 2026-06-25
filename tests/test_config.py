@@ -129,6 +129,70 @@ def test_read_variables_logs_no_error_for_valid_entries(mock_dbutils, write_json
     error.assert_not_called()
 
 
+def test_read_variables_null(mock_dbutils, write_json):
+    """A JSON null entry resolves to None."""
+    var_path = write_json("vars.json", {"OPT": None, "LIT": "x"})
+
+    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"OPT": None, "LIT": "x"}
+
+
+def test_read_json_substitutes_null(mock_dbutils, write_json):
+    """A null variable replaces a complete "${VAR}" string value with a JSON null."""
+    var_path = write_json("vars.json", {"DB": None, "HOST": "example.com"})
+    doc_path = write_json("doc.json", {"database": "${DB}", "endpoint": "https://${HOST}"})
+
+    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"database": None, "endpoint": "https://example.com"}
+
+
+def test_read_json_substitutes_null_unbraced(mock_dbutils, write_json):
+    """The unbraced "$VAR" form also becomes a JSON null."""
+    var_path = write_json("vars.json", {"DB": None})
+    doc_path = write_json("doc.json", {"database": "$DB"})
+
+    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"database": None}
+
+
+def test_read_json_null_alongside_secret(mock_dbutils, write_json):
+    """A null variable and a secret resolve together in one document."""
+    var_path = write_json("vars.json", {"OPT": None, "TOKEN": {"scope": "s", "key": "k"}})
+    doc_path = write_json("doc.json", {"optional": "${OPT}", "token": "${TOKEN}"})
+
+    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"optional": None, "token": "s_k_value"}
+
+
+def test_read_json_null_no_unresolved_warning(mock_dbutils, write_json, mocker):
+    """A null variable counts as provided, so it triggers no unresolved-variable warning."""
+    var_path = write_json("vars.json", {"DB": None})
+    doc_path = write_json("doc.json", {"database": "${DB}"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"database": None}
+    warning.assert_not_called()
+
+
+def test_read_json_null_embedded_in_string_warns(mock_dbutils, write_json, mocker):
+    """A null variable embedded in a larger string cannot become null and is left intact with a warning."""
+    var_path = write_json("vars.json", {"DB": None})
+    doc_path = write_json("doc.json", {"path": "prefix-${DB}"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"path": "prefix-${DB}"}
+    warning.assert_called_once()
+    assert "DB" in warning.call_args.args[-1]
+
+
 def test_read_json_substitutes_variables(mock_dbutils, write_json):
     """read_json substitutes ${VAR} placeholders from the variables file."""
     var_path = write_json("vars.json", {"HOST": "example.com", "DB": "grads"})
