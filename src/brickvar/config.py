@@ -34,9 +34,10 @@ class ConfigManager:  # pylint: disable=too-few-public-methods
     def read_variables(self, filepath: str) -> dict:
         """Read configuration variables from a JSON file.
 
-        Each entry maps a name to a value given in one of three forms: a literal string; an
-        environment-variable reference ``{"env": "NAME"}`` resolved from os.environ; or an Azure
-        Key Vault secret ``{"scope": ..., "key": ..., "base"?: ...}`` read via dbutils.
+        Each entry maps a name to a value given in one of four forms: a literal string; JSON
+        ``null`` (resolved to ``None``); an environment-variable reference ``{"env": "NAME"}``
+        resolved from os.environ; or an Azure Key Vault secret
+        ``{"scope": ..., "key": ..., "base"?: ...}`` read via dbutils.
 
         Resolution is two-pass so entries can reference each other: the first pass resolves the
         literal and environment values, and the second resolves the secrets, substituting any
@@ -48,10 +49,16 @@ class ConfigManager:  # pylint: disable=too-few-public-methods
             content = json.load(f)
         result = {}
 
-        # First pass: literal and environment values, which secret entries may reference.
+        # First pass: literal, null, and environment values, which secret entries may reference.
         for var_name, var_spec in content.items():
             if isinstance(var_spec, str):
-                result[var_name] = Template(var_spec).safe_substitute(**result)
+                # Null-valued variables cannot be embedded in a string, so omit them from the
+                # cross-reference mapping; their ${VAR} placeholders are left intact here.
+                result[var_name] = Template(var_spec).safe_substitute(
+                    **{name: value for name, value in result.items() if value is not None}
+                )
+            elif var_spec is None:
+                result[var_name] = None
             elif isinstance(var_spec, dict) and "env" in var_spec:
                 extra = set(var_spec) - {"env"}
                 if extra:
@@ -70,9 +77,10 @@ class ConfigManager:  # pylint: disable=too-few-public-methods
             scope = var_spec.get("scope")
             key = var_spec.get("key")
             if scope and key:
+                resolved = {name: value for name, value in result.items() if value is not None}
                 value = self.dbutils.secrets.get(
-                    Template(scope).safe_substitute(**result),
-                    Template(key).safe_substitute(**result),
+                    Template(scope).safe_substitute(**resolved),
+                    Template(key).safe_substitute(**resolved),
                 )
                 base = var_spec.get("base")
                 result[var_name] = base.format(value) if base else value
@@ -81,7 +89,11 @@ class ConfigManager:  # pylint: disable=too-few-public-methods
     def read_json(self, filepath: str, var_filepath: str = None) -> dict:
         """Read a JSON file, substituting ${VAR} placeholders from var_filepath when given.
 
-        Any placeholder the variables file does not supply is left intact and logged as a warning.
+        A variable whose value is ``None`` substitutes a JSON ``null``: its placeholder must be a
+        complete JSON string value (``"${VAR}"`` or ``"$VAR"``), which is replaced by the bare
+        token ``null``. A null variable embedded in a larger string cannot become null and is left
+        intact with a warning. Any placeholder the variables file does not supply is likewise left
+        intact and logged as a warning.
         """
         with open(filepath, encoding="utf-8") as f:
             content = f.read()
@@ -90,7 +102,20 @@ class ConfigManager:  # pylint: disable=too-few-public-methods
             unresolved = unresolved_variables(content, variables)
             if unresolved:
                 logger.warning("Unresolved variable(s) in %s: %s", filepath, ", ".join(unresolved))
-            content = Template(content).safe_substitute(**variables)
+            # Replace each null variable's quoted placeholder with a bare JSON null, then
+            # textually substitute the remaining (string-valued) variables.
+            str_vars = {name: value for name, value in variables.items() if value is not None}
+            null_vars = [name for name, value in variables.items() if value is None]
+            for name in null_vars:
+                content = content.replace(f'"${{{name}}}"', "null").replace(f'"${name}"', "null")
+            embedded_nulls = sorted(set(null_vars) & set(unresolved_variables(content, str_vars)))
+            if embedded_nulls:
+                logger.warning(
+                    "Null variable(s) embedded in a string in %s, left unresolved: %s",
+                    filepath,
+                    ", ".join(embedded_nulls),
+                )
+            content = Template(content).safe_substitute(**str_vars)
         return json.loads(content)
 
 

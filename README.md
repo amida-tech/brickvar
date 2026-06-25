@@ -6,6 +6,7 @@ variables, and Azure Key Vault secrets, and substitute them into JSON config fil
 `brickvar` reads a JSON "variables" file in which each entry is one of:
 
 - a **literal** string (which may reference other variables with `${VAR}`),
+- **`null`**, which substitutes a JSON `null` into the config file,
 - an **environment variable** reference — `{"env": "NAME"}`, or
 - a **Databricks / Azure Key Vault secret** — `{"scope": ..., "key": ..., "base"?: ...}`,
   read through the Databricks `dbutils.secrets` API.
@@ -13,6 +14,11 @@ variables, and Azure Key Vault secrets, and substitute them into JSON config fil
 Resolution is two-pass, so a secret's `scope`/`key` can themselves reference
 already-resolved literal or environment values. It can also substitute `${VAR}`
 placeholders into any JSON file, leaving unknown placeholders intact.
+
+A `null` variable substitutes a real JSON `null`. Because substitution is textual,
+its placeholder must be a complete string value — `"${VAR}"` becomes `null` (quotes
+and all). A null variable embedded in a larger string (`"prefix-${VAR}"`) cannot
+become null and is left intact with a warning.
 
 ## Install
 
@@ -51,6 +57,7 @@ Example `variables.json`:
 {
   "SECRET_SCOPE": { "env": "SECRET_SCOPE" },
   "HOST": "example.documents.azure.us",
+  "PROXY": null,
   "CLIENT_ID": { "scope": "${SECRET_SCOPE}", "key": "SP-CLIENT-ID" },
   "STORAGE": { "scope": "kv", "key": "ACCOUNT", "base": "abfss://data@{}/curated" }
 }
@@ -58,6 +65,7 @@ Example `variables.json`:
 
 - `HOST` is a literal.
 - `SECRET_SCOPE` comes from the `SECRET_SCOPE` environment variable.
+- `PROXY` is `null` — a `"${PROXY}"` placeholder becomes a JSON `null`.
 - `CLIENT_ID` is a secret whose scope is filled from the resolved `SECRET_SCOPE`.
 - `STORAGE` is a secret wrapped by its `base` format string.
 
