@@ -8,19 +8,20 @@ Variables come from literals, environment variables, and Azure Key Vault secrets
 import os
 import json
 import logging
+from collections.abc import Iterable
 from string import Template
 
 logger = logging.getLogger(__name__)
 
 
-def unresolved_variables(content, provided):
+def unresolved_variables(content: str, provided: Iterable[str]) -> list[str]:
     """Variable names referenced as $name/${name} in content that provided does not supply."""
     referenced = {match.group("named") or match.group("braced") for match in Template.pattern.finditer(content)}
     referenced.discard(None)  # escaped ($$) and invalid ($) matches contribute None
     return sorted(referenced - set(provided))
 
 
-class VariableResolver:  # pylint: disable=too-few-public-methods
+class VariableResolver:
     """Reads JSON files and substitutes their ${VAR} placeholders from a variables file."""
 
     def __init__(self, dbutils=None):
@@ -47,6 +48,15 @@ class VariableResolver:  # pylint: disable=too-few-public-methods
         """
         with open(filepath, encoding="utf-8") as f:
             content = json.load(f)
+        return self._resolve_variables(content)
+
+    def _resolve_variables(self, content: dict) -> dict:
+        """Resolve a mapping of variable specs (see read_variables) to concrete values.
+
+        Split out from read_variables so callers that merge several variables files can
+        combine the raw specs first and resolve the merged mapping in a single two-pass run,
+        which is what lets a variable in one file reference one defined in another.
+        """
         result = {}
 
         # First pass: literal, null, and environment values, which secret entries may reference.
@@ -99,24 +109,85 @@ class VariableResolver:  # pylint: disable=too-few-public-methods
             content = f.read()
         if var_filepath is not None:
             variables = self.read_variables(var_filepath)
-            unresolved = unresolved_variables(content, variables)
-            if unresolved:
-                logger.warning("Unresolved variable(s) in %s: %s", filepath, ", ".join(unresolved))
-            # Replace each null variable's quoted placeholder with a bare JSON null, then
-            # textually substitute the remaining (string-valued) variables.
-            str_vars = {name: value for name, value in variables.items() if value is not None}
-            null_vars = [name for name, value in variables.items() if value is None]
-            for name in null_vars:
-                content = content.replace(f'"${{{name}}}"', "null").replace(f'"${name}"', "null")
-            embedded_nulls = sorted(set(null_vars) & set(unresolved_variables(content, str_vars)))
-            if embedded_nulls:
-                logger.warning(
-                    "Null variable(s) embedded in a string in %s, left unresolved: %s",
-                    filepath,
-                    ", ".join(embedded_nulls),
-                )
-            content = Template(content).safe_substitute(**str_vars)
+            content = self._substitute(content, variables, filepath)
         return json.loads(content)
+
+    @staticmethod
+    def _substitute(content: str, variables: dict, filepath: str) -> str:
+        """Substitute ${VAR} placeholders in JSON text from variables, returning the new text.
+
+        Split out from read_json so callers with an already-resolved variables mapping (e.g.
+        one merged from several files) can substitute it into a document without re-reading a
+        variables file. See read_json for the null-substitution and unresolved-variable rules.
+        """
+        unresolved = unresolved_variables(content, variables)
+        if unresolved:
+            logger.warning("Unresolved variable(s) in %s: %s", filepath, ", ".join(unresolved))
+        # Replace each null variable's quoted placeholder with a bare JSON null, then
+        # textually substitute the remaining (string-valued) variables.
+        str_vars = {name: value for name, value in variables.items() if value is not None}
+        null_vars = [name for name, value in variables.items() if value is None]
+        for name in null_vars:
+            content = content.replace(f'"${{{name}}}"', "null").replace(f'"${name}"', "null")
+        embedded_nulls = sorted(set(null_vars) & set(unresolved_variables(content, str_vars)))
+        if embedded_nulls:
+            logger.warning(
+                "Null variable(s) embedded in a string in %s, left unresolved: %s",
+                filepath,
+                ", ".join(embedded_nulls),
+            )
+        return Template(content).safe_substitute(**str_vars)
+
+    def read_jsons(self, filepaths: list[str], var_filepaths: list[str] = None) -> dict:
+        """Read and merge several JSON config files, substituting ${VAR} placeholders.
+
+        The variables files in ``var_filepaths`` are merged *before* resolution: their raw
+        entries are combined into a single mapping (a later file's entry overrides an earlier
+        one of the same name, with a warning) and then resolved in one two-pass run, so a
+        variable in one file may reference one defined in an earlier file. The resolved
+        variables are substituted into every config file in ``filepaths``.
+
+        The config files are then shallow-merged at the top level into a single object: a key
+        defined by more than one file takes the value from the last file, with a warning. Each
+        config file must be a JSON object; a non-object top level raises ``ValueError``. See
+        read_json for the per-file substitution and null-handling rules.
+        """
+        variables = {}
+        if var_filepaths:
+            merged_raw_vars = {}
+            for var_filepath in var_filepaths:
+                with open(var_filepath, encoding="utf-8") as f:
+                    raw_vars = json.load(f)
+                # Names already merged that this file redefines (dict key views support set ops).
+                overridden = merged_raw_vars.keys() & raw_vars.keys()
+                if overridden:
+                    logger.warning(
+                        "Variable(s) in %s override an earlier definition: %s",
+                        var_filepath,
+                        ", ".join(sorted(overridden)),
+                    )
+                merged_raw_vars.update(raw_vars)
+            variables = self._resolve_variables(merged_raw_vars)
+
+        merged_spec = {}
+        for filepath in filepaths:
+            with open(filepath, encoding="utf-8") as f:
+                content = f.read()
+            if var_filepaths:
+                content = self._substitute(content, variables, filepath)
+            spec = json.loads(content)
+            if not isinstance(spec, dict):
+                raise ValueError(f"Config file {filepath} is not a JSON object (got {type(spec).__name__})")
+            # Top-level keys already merged that this file overrides (key views support set ops).
+            overridden = merged_spec.keys() & spec.keys()
+            if overridden:
+                logger.warning(
+                    "Key(s) in %s override an earlier value: %s",
+                    filepath,
+                    ", ".join(sorted(overridden)),
+                )
+            merged_spec.update(spec)
+        return merged_spec
 
 
 def configure_json(filepath: str, *, dbutils=None, var_filepath: str = None) -> dict:
@@ -127,3 +198,13 @@ def configure_json(filepath: str, *, dbutils=None, var_filepath: str = None) -> 
     variables file contains Key Vault secrets. See VariableResolver.read_json for details.
     """
     return VariableResolver(dbutils=dbutils).read_json(filepath, var_filepath=var_filepath)
+
+
+def configure_jsons(filepaths: list[str], *, dbutils=None, var_filepaths: list[str] = None) -> dict:
+    """Read and merge several JSON config files, resolving ${VAR} placeholders in one call.
+
+    Convenience wrapper that instantiates a VariableResolver with ``dbutils`` and returns
+    ``read_jsons(filepaths, var_filepaths=var_filepaths)``. ``dbutils`` is only needed when a
+    variables entry is a Key Vault secret. See VariableResolver.read_jsons for details.
+    """
+    return VariableResolver(dbutils=dbutils).read_jsons(filepaths, var_filepaths=var_filepaths)

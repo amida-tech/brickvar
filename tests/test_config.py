@@ -1,6 +1,8 @@
 """Tests for brickvar.config.VariableResolver."""
 
-from brickvar import VariableResolver, configure_json
+import pytest
+
+from brickvar import VariableResolver, configure_json, configure_jsons
 from brickvar.config import unresolved_variables
 
 
@@ -107,7 +109,7 @@ def test_read_variables_logs_error_for_unpaired_scope_or_key(mock_dbutils, write
 
     result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
-    assert result == {}
+    assert not result
     assert error.call_count == 2
     mock_dbutils.secrets.get.assert_not_called()
 
@@ -254,6 +256,106 @@ def test_configure_json_resolves_secret(mock_dbutils, write_json):
     result = configure_json(doc_path, dbutils=mock_dbutils, var_filepath=var_path)
 
     assert result == {"token": "s_k_value"}
+
+
+def test_read_jsons_merges_and_substitutes(mock_dbutils, write_json):
+    """read_jsons merges several config files and substitutes merged variables."""
+    var_path = write_json("vars.json", {"HOST": "example.com"})
+    a_path = write_json("a.json", {"endpoint": "https://${HOST}"})
+    b_path = write_json("b.json", {"db": "grads"})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_jsons([a_path, b_path], var_filepaths=[var_path])
+
+    assert result == {"endpoint": "https://example.com", "db": "grads"}
+
+
+def test_configure_jsons_merges_distinct_keys(mock_dbutils, write_json):
+    """configure_jsons shallow-merges several config files into one object."""
+    var_path = write_json("vars.json", {"HOST": "example.com"})
+    a_path = write_json("a.json", {"endpoint": "https://${HOST}"})
+    b_path = write_json("b.json", {"db": "grads"})
+
+    result = configure_jsons([a_path, b_path], dbutils=mock_dbutils, var_filepaths=[var_path])
+
+    assert result == {"endpoint": "https://example.com", "db": "grads"}
+
+
+def test_configure_jsons_later_file_wins_on_conflict(write_json, mocker):
+    """A top-level key defined by more than one file takes the last file's value, with a warning."""
+    a_path = write_json("a.json", {"port": 1, "host": "a"})
+    b_path = write_json("b.json", {"port": 2})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = configure_jsons([a_path, b_path])
+
+    assert result == {"port": 2, "host": "a"}
+    warning.assert_called_once()
+    assert "port" in warning.call_args.args[0] % warning.call_args.args[1:]
+
+
+def test_configure_jsons_shallow_merge_replaces_nested_object(write_json):
+    """Merge is shallow: a conflicting top-level object is replaced wholesale, not deep-merged."""
+    a_path = write_json("a.json", {"db": {"host": "h", "port": 1}})
+    b_path = write_json("b.json", {"db": {"port": 2}})
+
+    result = configure_jsons([a_path, b_path])
+
+    assert result == {"db": {"port": 2}}
+
+
+def test_configure_jsons_merges_variables_across_files(mock_dbutils, write_json):
+    """Variables files are merged before resolution, so one file may reference another's variable."""
+    base_path = write_json("base.vars.json", {"BASE": "root"})
+    env_path = write_json("env.vars.json", {"CHILD": "${BASE}/child"})
+    doc_path = write_json("doc.json", {"path": "${CHILD}"})
+
+    result = configure_jsons([doc_path], dbutils=mock_dbutils, var_filepaths=[base_path, env_path])
+
+    assert result == {"path": "root/child"}
+
+
+def test_configure_jsons_later_variable_file_wins(mock_dbutils, write_json, mocker):
+    """A variable defined in more than one file takes the last file's definition, with a warning."""
+    base_path = write_json("base.vars.json", {"HOST": "base.example.com"})
+    override_path = write_json("override.vars.json", {"HOST": "prod.example.com"})
+    doc_path = write_json("doc.json", {"endpoint": "https://${HOST}"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = configure_jsons([doc_path], dbutils=mock_dbutils, var_filepaths=[base_path, override_path])
+
+    assert result == {"endpoint": "https://prod.example.com"}
+    warning.assert_called_once()
+    assert "HOST" in warning.call_args.args[0] % warning.call_args.args[1:]
+
+
+def test_configure_jsons_without_variables(write_json):
+    """configure_jsons with no variables files (and no dbutils) merges the files unchanged."""
+    a_path = write_json("a.json", {"a": 1})
+    b_path = write_json("b.json", {"b": "${UNTOUCHED}"})
+
+    result = configure_jsons([a_path, b_path])
+
+    assert result == {"a": 1, "b": "${UNTOUCHED}"}
+
+
+def test_configure_jsons_substitutes_null_across_files(mock_dbutils, write_json):
+    """A null variable resolves to JSON null in whichever merged file references it."""
+    var_path = write_json("vars.json", {"OPT": None})
+    a_path = write_json("a.json", {"optional": "${OPT}"})
+    b_path = write_json("b.json", {"name": "fixed"})
+
+    result = configure_jsons([a_path, b_path], dbutils=mock_dbutils, var_filepaths=[var_path])
+
+    assert result == {"optional": None, "name": "fixed"}
+
+
+def test_configure_jsons_raises_on_non_object_config(mock_dbutils, write_json):
+    """A config file whose top level is not a JSON object raises ValueError."""
+    a_path = write_json("a.json", {"ok": 1})
+    b_path = write_json("b.json", ["not", "an", "object"])
+
+    with pytest.raises(ValueError, match="not a JSON object"):
+        configure_jsons([a_path, b_path], dbutils=mock_dbutils)
 
 
 def test_unresolved_variables_helper():

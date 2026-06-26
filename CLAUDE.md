@@ -10,15 +10,23 @@ secrets via `dbutils.secrets`) and substitutes them into JSON config files. It h
 
 ## Public API
 
-- **`VariableResolver`** — `read_variables(filepath)` and
-  `read_json(filepath, var_filepath=None)`. (Renamed from `ConfigManager`, since 0.0.4 —
-  no back-compat alias.)
+- **`VariableResolver`** — `read_variables(filepath)`, `read_json(filepath, var_filepath=None)`,
+  and `read_jsons(filepaths, var_filepaths=None)` (since 0.0.4 — merges multiple files).
+  (Renamed from `ConfigManager`, since 0.0.4 — no back-compat alias.)
 - Module-level helper **`unresolved_variables(content, provided)`**.
 - Package-level convenience **`configure_json(filepath, *, dbutils=None, var_filepath=None)`**
   (since 0.0.2) — instantiates a `VariableResolver` and calls `read_json` in one step.
+- Package-level **`configure_jsons(filepaths, *, dbutils=None, var_filepaths=None)`**
+  (since 0.0.4) — merges several config files and/or variables files in one call. Variables
+  files are merged **before** resolution (so a variable may reference one from an earlier
+  file; name conflicts: later file wins, with a warning). Config files are **shallow**-merged
+  at the top level (key conflicts: later file wins, with a warning). It is a thin wrapper over
+  `VariableResolver.read_jsons`, where the merge logic lives (reusing the `_resolve_variables`
+  / `_substitute` internals), mirroring `configure_json` → `read_json`.
 
-Prefer `configure_json` for the common case; use `VariableResolver` directly when you need
-`read_variables` or want to reuse an instance.
+Prefer `configure_json` for the common single-file case and `configure_jsons` for the
+multi-file case; use `VariableResolver` directly when you need `read_variables` or want to
+reuse an instance.
 
 ### Variables-file entry forms
 
@@ -44,8 +52,9 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 
 ## Current status
 
-- `pytest`: **22 passing**. `python -m build` + `twine check dist/*`: passing.
-- Latest on PyPI: **0.0.3** (https://pypi.org/project/brickvar/).
+- `pytest`: **31 passing**. `python -m build` + `twine check dist/*`: passing.
+- Latest on PyPI: **0.0.3** (https://pypi.org/project/brickvar/); `0.0.4` in progress on
+  `feature/multi-file-and-api-cleanup` (rename + single-source version + `configure_jsons`).
 
 ## Dev setup
 
