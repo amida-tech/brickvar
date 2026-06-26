@@ -53,8 +53,8 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 ## Current status
 
 - `pytest`: **31 passing**. `python -m build` + `twine check dist/*`: passing.
-- Latest on PyPI: **0.0.3** (https://pypi.org/project/brickvar/); `0.0.4` in progress on
-  `feature/multi-file-and-api-cleanup` (rename + single-source version + `configure_jsons`).
+- Latest on PyPI: **0.0.4** (https://pypi.org/project/brickvar/) — `VariableResolver` rename,
+  single-source version, and multi-file merging (`read_jsons` / `configure_jsons`).
 
 ## Dev setup
 
