@@ -20,11 +20,11 @@ def unresolved_variables(content, provided):
     return sorted(referenced - set(provided))
 
 
-class ConfigManager:  # pylint: disable=too-few-public-methods
+class VariableResolver:  # pylint: disable=too-few-public-methods
     """Reads JSON files and substitutes their ${VAR} placeholders from a variables file."""
 
     def __init__(self, dbutils=None):
-        """Initialize ConfigManager with the Databricks utilities used to read secrets.
+        """Initialize VariableResolver with the Databricks utilities used to read secrets.
 
         ``dbutils`` is only required when a variables file contains Key Vault secret
         entries; literal- and environment-only files resolve without it.
@@ -122,8 +122,8 @@ class ConfigManager:  # pylint: disable=too-few-public-methods
 def configure_json(filepath: str, *, dbutils=None, var_filepath: str = None) -> dict:
     """Read a JSON config file and resolve its ${VAR} placeholders in one call.
 
-    Convenience wrapper that instantiates a ConfigManager with ``dbutils`` and returns
+    Convenience wrapper that instantiates a VariableResolver with ``dbutils`` and returns
     ``read_json(filepath, var_filepath=var_filepath)``. ``dbutils`` is only needed when the
-    variables file contains Key Vault secrets. See ConfigManager.read_json for details.
+    variables file contains Key Vault secrets. See VariableResolver.read_json for details.
     """
-    return ConfigManager(dbutils=dbutils).read_json(filepath, var_filepath=var_filepath)
+    return VariableResolver(dbutils=dbutils).read_json(filepath, var_filepath=var_filepath)

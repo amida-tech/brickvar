@@ -37,12 +37,12 @@ from brickvar import configure_json
 spec = configure_json("spec.json", dbutils=dbutils, var_filepath="variables.json")
 ```
 
-For finer-grained control, use the `ConfigManager` class directly:
+For finer-grained control, use the `VariableResolver` class directly:
 
 ```python
-from brickvar import ConfigManager
+from brickvar import VariableResolver
 
-cfg = ConfigManager(dbutils=dbutils)
+cfg = VariableResolver(dbutils=dbutils)
 
 # Resolve a variables file to a dict.
 variables = cfg.read_variables("variables.json")

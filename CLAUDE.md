@@ -10,13 +10,14 @@ secrets via `dbutils.secrets`) and substitutes them into JSON config files. It h
 
 ## Public API
 
-- **`ConfigManager`** — `read_variables(filepath)` and
-  `read_json(filepath, var_filepath=None)`.
+- **`VariableResolver`** — `read_variables(filepath)` and
+  `read_json(filepath, var_filepath=None)`. (Renamed from `ConfigManager`, since 0.0.4 —
+  no back-compat alias.)
 - Module-level helper **`unresolved_variables(content, provided)`**.
 - Package-level convenience **`configure_json(filepath, *, dbutils=None, var_filepath=None)`**
-  (since 0.0.2) — instantiates a `ConfigManager` and calls `read_json` in one step.
+  (since 0.0.2) — instantiates a `VariableResolver` and calls `read_json` in one step.
 
-Prefer `configure_json` for the common case; use `ConfigManager` directly when you need
+Prefer `configure_json` for the common case; use `VariableResolver` directly when you need
 `read_variables` or want to reuse an instance.
 
 ### Variables-file entry forms
@@ -63,9 +64,9 @@ the publish job pauses until approved.
 
 To cut a release:
 
-1. Bump the version in **two places**: `pyproject.toml` `version` and
-   `src/brickvar/__init__.py` `__version__`. PyPI rejects re-uploading an existing version,
-   so always bump first.
+1. Bump the version in **one place**: `__version__` in `src/brickvar/__init__.py`.
+   `pyproject.toml` reads it dynamically (`[tool.setuptools.dynamic] version = {attr = ...}`).
+   PyPI rejects re-uploading an existing version, so always bump first.
 2. Land the bump on `main` (via `develop` → `main`).
 3. Publish a **GitHub Release** tagged `vX.Y.Z` targeting `main` (drafting first lets you
    review notes; drafts do not trigger the workflow).
@@ -73,6 +74,5 @@ To cut a release:
 
 ## Open questions
 
-- The class name `ConfigManager` is generic; consider renaming (e.g. `Resolver` /
-  `VariableResolver`) before the API stabilizes past 0.0.x.
-- Consider consolidating the version to a single source of truth (currently two places).
+- _(none open)_ — the `ConfigManager` → `VariableResolver` rename and the single-source
+  version (dynamic in `pyproject.toml`) are both done on `feature/multi-file-and-api-cleanup`.

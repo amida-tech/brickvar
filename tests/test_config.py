@@ -1,6 +1,6 @@
-"""Tests for brickvar.config.ConfigManager."""
+"""Tests for brickvar.config.VariableResolver."""
 
-from brickvar import ConfigManager, configure_json
+from brickvar import VariableResolver, configure_json
 from brickvar.config import unresolved_variables
 
 
@@ -8,7 +8,7 @@ def test_read_variables_literal_and_cross_reference(mock_dbutils, write_json):
     """Literal entries resolve as-is, and a later literal may reference an earlier one."""
     var_path = write_json("vars.json", {"BASE": "root", "CHILD": "${BASE}/child"})
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     assert result == {"BASE": "root", "CHILD": "root/child"}
 
@@ -18,7 +18,7 @@ def test_read_variables_from_environment(mock_dbutils, monkeypatch, write_json):
     monkeypatch.setenv("VASRD_PATH", "abfss://vasrd@account/current")
     var_path = write_json("vars.json", {"VASRD_PATH": {"env": "VASRD_PATH"}})
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     assert result == {"VASRD_PATH": "abfss://vasrd@account/current"}
 
@@ -33,7 +33,7 @@ def test_read_variables_secret_with_base(mock_dbutils, write_json):
         },
     )
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     mock_dbutils.secrets.get.assert_any_call("s", "k")
     assert result["PLAIN"] == "s_k_value"
@@ -54,7 +54,7 @@ def test_read_variables_secret_scope_from_environment(mock_dbutils, monkeypatch,
         },
     )
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     # The scope ${SCOPE} resolved to the env value before the secret was fetched.
     mock_dbutils.secrets.get.assert_any_call("NeoSecretScope", "STORAGE-URL")
@@ -69,7 +69,7 @@ def test_read_variables_skips_incomplete_secret(mock_dbutils, write_json):
         {"NO_KEY": {"scope": "s"}, "NO_SCOPE": {"key": "k"}, "GOOD": "literal"},
     )
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     assert result == {"GOOD": "literal"}
     mock_dbutils.secrets.get.assert_not_called()
@@ -81,7 +81,7 @@ def test_read_variables_logs_error_for_env_entry_with_extra_key(mock_dbutils, mo
     var_path = write_json("vars.json", {"HOST": {"env": "HOST", "scope": "oops"}})
     error = mocker.patch("brickvar.config.logger.error")
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     assert result == {"HOST": "example.com"}
     error.assert_called_once()
@@ -93,7 +93,7 @@ def test_read_variables_logs_error_for_secret_entry_with_unexpected_key(mock_dbu
     var_path = write_json("vars.json", {"S": {"scope": "s", "key": "k", "bogus": 1}})
     error = mocker.patch("brickvar.config.logger.error")
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     assert result["S"] == "s_k_value"
     error.assert_called_once()
@@ -105,7 +105,7 @@ def test_read_variables_logs_error_for_unpaired_scope_or_key(mock_dbutils, write
     var_path = write_json("vars.json", {"NO_KEY": {"scope": "s"}, "NO_SCOPE": {"key": "k"}})
     error = mocker.patch("brickvar.config.logger.error")
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     assert result == {}
     assert error.call_count == 2
@@ -124,7 +124,7 @@ def test_read_variables_logs_no_error_for_valid_entries(mock_dbutils, write_json
     )
     error = mocker.patch("brickvar.config.logger.error")
 
-    ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     error.assert_not_called()
 
@@ -133,7 +133,7 @@ def test_read_variables_null(mock_dbutils, write_json):
     """A JSON null entry resolves to None."""
     var_path = write_json("vars.json", {"OPT": None, "LIT": "x"})
 
-    result = ConfigManager(dbutils=mock_dbutils).read_variables(var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     assert result == {"OPT": None, "LIT": "x"}
 
@@ -143,7 +143,7 @@ def test_read_json_substitutes_null(mock_dbutils, write_json):
     var_path = write_json("vars.json", {"DB": None, "HOST": "example.com"})
     doc_path = write_json("doc.json", {"database": "${DB}", "endpoint": "https://${HOST}"})
 
-    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
 
     assert result == {"database": None, "endpoint": "https://example.com"}
 
@@ -153,7 +153,7 @@ def test_read_json_substitutes_null_unbraced(mock_dbutils, write_json):
     var_path = write_json("vars.json", {"DB": None})
     doc_path = write_json("doc.json", {"database": "$DB"})
 
-    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
 
     assert result == {"database": None}
 
@@ -163,7 +163,7 @@ def test_read_json_null_alongside_secret(mock_dbutils, write_json):
     var_path = write_json("vars.json", {"OPT": None, "TOKEN": {"scope": "s", "key": "k"}})
     doc_path = write_json("doc.json", {"optional": "${OPT}", "token": "${TOKEN}"})
 
-    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
 
     assert result == {"optional": None, "token": "s_k_value"}
 
@@ -174,7 +174,7 @@ def test_read_json_null_no_unresolved_warning(mock_dbutils, write_json, mocker):
     doc_path = write_json("doc.json", {"database": "${DB}"})
     warning = mocker.patch("brickvar.config.logger.warning")
 
-    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
 
     assert result == {"database": None}
     warning.assert_not_called()
@@ -186,7 +186,7 @@ def test_read_json_null_embedded_in_string_warns(mock_dbutils, write_json, mocke
     doc_path = write_json("doc.json", {"path": "prefix-${DB}"})
     warning = mocker.patch("brickvar.config.logger.warning")
 
-    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
 
     assert result == {"path": "prefix-${DB}"}
     warning.assert_called_once()
@@ -198,7 +198,7 @@ def test_read_json_substitutes_variables(mock_dbutils, write_json):
     var_path = write_json("vars.json", {"HOST": "example.com", "DB": "grads"})
     doc_path = write_json("doc.json", {"endpoint": "https://${HOST}", "database": "${DB}"})
 
-    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
 
     assert result == {"endpoint": "https://example.com", "database": "grads"}
 
@@ -207,7 +207,7 @@ def test_read_json_without_variables(mock_dbutils, write_json):
     """read_json with no variables file returns the JSON unchanged."""
     doc_path = write_json("doc.json", {"a": 1, "b": "${UNTOUCHED}"})
 
-    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path)
 
     assert result == {"a": 1, "b": "${UNTOUCHED}"}
 
@@ -218,7 +218,7 @@ def test_read_json_warns_on_unresolved_variable(mock_dbutils, write_json, mocker
     doc_path = write_json("doc.json", {"path": "${PROVIDED}", "extra": "${MISSING}"})
     warning = mocker.patch("brickvar.config.logger.warning")
 
-    result = ConfigManager(dbutils=mock_dbutils).read_json(doc_path, var_path)
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
 
     assert result == {"path": "ok", "extra": "${MISSING}"}
     warning.assert_called_once()
@@ -247,7 +247,7 @@ def test_configure_json_without_variables(write_json):
 
 
 def test_configure_json_resolves_secret(mock_dbutils, write_json):
-    """configure_json passes dbutils through to ConfigManager so Key Vault secrets resolve."""
+    """configure_json passes dbutils through to VariableResolver so Key Vault secrets resolve."""
     var_path = write_json("vars.json", {"TOKEN": {"scope": "s", "key": "k"}})
     doc_path = write_json("doc.json", {"token": "${TOKEN}"})
 
