@@ -37,12 +37,29 @@ from brickvar import configure_json
 spec = configure_json("spec.json", dbutils=dbutils, var_filepath="variables.json")
 ```
 
-For finer-grained control, use the `ConfigManager` class directly:
+To merge several config files (and/or several variables files) in one call, use
+`configure_jsons`:
 
 ```python
-from brickvar import ConfigManager
+from brickvar import configure_jsons
 
-cfg = ConfigManager(dbutils=dbutils)
+# Variables files are merged *before* resolution, so a variable in one file may
+# reference one defined in an earlier file. The config files are shallow-merged at
+# the top level: a key defined by more than one file takes the last file's value
+# (a conflict is logged as a warning).
+spec = configure_jsons(
+    ["base.json", "prod.json"],
+    dbutils=dbutils,
+    var_filepaths=["base.variables.json", "prod.variables.json"],
+)
+```
+
+For finer-grained control, use the `VariableResolver` class directly:
+
+```python
+from brickvar import VariableResolver
+
+cfg = VariableResolver(dbutils=dbutils)
 
 # Resolve a variables file to a dict.
 variables = cfg.read_variables("variables.json")

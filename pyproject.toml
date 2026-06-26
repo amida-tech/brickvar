@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "brickvar"
-version = "0.0.3"
+dynamic = ["version"]
 description = "Resolve Databricks config variables from literals, environment variables, and Azure Key Vault secrets, and substitute them into JSON config files."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -29,6 +29,9 @@ dev = ["pytest", "pytest-mock", "pytest-cov", "black", "pylint", "build", "twine
 Homepage = "https://github.com/amida-tech/brickvar"
 Repository = "https://github.com/amida-tech/brickvar"
 Issues = "https://github.com/amida-tech/brickvar/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "brickvar.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
