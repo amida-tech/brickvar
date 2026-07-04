@@ -19,10 +19,15 @@ secrets via `dbutils.secrets`) and substitutes them into JSON config files. It h
 - Package-level **`configure_jsons(filepaths, *, dbutils=None, var_filepaths=None)`**
   (since 0.0.4) — merges several config files and/or variables files in one call. Variables
   files are merged **before** resolution (so a variable may reference one from an earlier
-  file; name conflicts: later file wins, with a warning). Config files are **shallow**-merged
-  at the top level (key conflicts: later file wins, with a warning). It is a thin wrapper over
-  `VariableResolver.read_jsons`, where the merge logic lives (reusing the `_resolve_variables`
-  / `_substitute` internals), mirroring `configure_json` → `read_json`.
+  file; name conflicts: later file wins, with a warning). Config files are **deep**-merged
+  (since 0.0.5): nested objects merge key by key, lists **concatenate** (later file's items
+  appended), and a scalar leaf takes the **last** file's value. A key given incompatible
+  shapes by two files (e.g. a list vs. an object) raises `ValueError` — except a JSON `null`
+  opposite a list/object, which is allowed as a last-wins override (with a warning). Logging
+  by conflict kind: list append and equal-value redefinition → `info`; any override that
+  discards a differing value (scalar, or null↔container) → `warning`. It is a thin wrapper over `VariableResolver.read_jsons`, where
+  the merge logic lives (reusing the `_resolve_variables` / `_substitute` / `_deep_merge`
+  internals), mirroring `configure_json` → `read_json`.
 
 Prefer `configure_json` for the common single-file case and `configure_jsons` for the
 multi-file case; use `VariableResolver` directly when you need `read_variables` or want to
@@ -52,9 +57,12 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 
 ## Current status
 
-- `pytest`: **31 passing**. `python -m build` + `twine check dist/*`: passing.
-- Latest on PyPI: **0.0.3** (https://pypi.org/project/brickvar/); `0.0.4` in progress on
-  `feature/multi-file-and-api-cleanup` (rename + single-source version + `configure_jsons`).
+- `pytest`: **38 passing**. `python -m build` + `twine check dist/*`: passing.
+- Latest on PyPI: **0.0.4** (https://pypi.org/project/brickvar/) — `VariableResolver` rename,
+  single-source version, and multi-file merging (`read_jsons` / `configure_jsons`).
+- `__version__` bumped to **0.0.5** on `develop` (not yet on PyPI): deep-merge for `read_jsons`
+  / `configure_jsons` (dicts merge, lists concatenate, scalars last-wins, mismatched containers
+  raise, null↔container is a warned last-wins override).
 
 ## Dev setup
 
