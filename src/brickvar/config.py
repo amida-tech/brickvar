@@ -138,8 +138,49 @@ class VariableResolver:
             )
         return Template(content).safe_substitute(**str_vars)
 
+    @staticmethod
+    def _deep_merge(base, incoming, path: str):
+        """Recursively merge ``incoming`` into ``base`` and return the merged value.
+
+        Two dicts are merged key by key; two lists are concatenated (``incoming`` appended
+        after ``base``); any other pair is treated as a leaf where the later value wins. A key
+        whose two values differ in container-ness (a list opposite a dict or non-null scalar,
+        or a dict opposite a non-null scalar) cannot be merged or appended and raises
+        ``ValueError`` -- except that a JSON ``null`` opposite a container is allowed as a
+        leaf override (null blanks out a container, or a container replaces null).
+
+        List appends and value-preserving redefinitions (a leaf replaced by an equal value)
+        are logged at INFO; a leaf override that discards a differing value -- including a
+        null/container override -- is logged at WARNING. ``path`` is the dotted key path used
+        only in those log messages.
+        """
+        if isinstance(base, dict) and isinstance(incoming, dict):
+            for key, value in incoming.items():
+                key_path = f"{path}.{key}" if path else key
+                base[key] = VariableResolver._deep_merge(base[key], value, key_path) if key in base else value
+            return base
+        if isinstance(base, list) and isinstance(incoming, list):
+            logger.info("Appended %d item(s) to '%s'", len(incoming), path)
+            return base + incoming
+        if isinstance(base, (dict, list)) or isinstance(incoming, (dict, list)):
+            # A JSON null opposite a container is not a hard conflict: null blanks out a
+            # container, or is itself replaced by one. Warn (a value is discarded) and let
+            # the later file win, rather than raising as for two mismatched containers.
+            if base is None or incoming is None:
+                logger.warning("'%s' overridden: %r -> %r", path, base, incoming)
+                return incoming
+            raise ValueError(
+                f"Conflicting types for '{path}': cannot merge "
+                f"{type(base).__name__} with {type(incoming).__name__}"
+            )
+        if base == incoming:
+            logger.info("'%s' redefined with an identical value", path)
+        else:
+            logger.warning("'%s' overridden: %r -> %r", path, base, incoming)
+        return incoming
+
     def read_jsons(self, filepaths: list[str], var_filepaths: list[str] = None) -> dict:
-        """Read and merge several JSON config files, substituting ${VAR} placeholders.
+        """Read and deep-merge several JSON config files, substituting ${VAR} placeholders.
 
         The variables files in ``var_filepaths`` are merged *before* resolution: their raw
         entries are combined into a single mapping (a later file's entry overrides an earlier
@@ -147,10 +188,14 @@ class VariableResolver:
         variable in one file may reference one defined in an earlier file. The resolved
         variables are substituted into every config file in ``filepaths``.
 
-        The config files are then shallow-merged at the top level into a single object: a key
-        defined by more than one file takes the value from the last file, with a warning. Each
-        config file must be a JSON object; a non-object top level raises ``ValueError``. See
-        read_json for the per-file substitution and null-handling rules.
+        The config files are then deep-merged in order into a single object: nested objects
+        merge key by key, lists concatenate (a later file's items are appended), and a scalar
+        leaf takes the value from the last file that sets it. A key given incompatible shapes
+        by two files (e.g. a list in one and an object in another) raises ``ValueError`` --
+        though a JSON ``null`` opposite a list or object is allowed as a last-wins override,
+        with a warning. A config file whose top level is not a JSON object also raises
+        ``ValueError``. See _deep_merge for the per-conflict logging and read_json for the
+        per-file substitution and null rules.
         """
         variables = {}
         if var_filepaths:
@@ -178,15 +223,7 @@ class VariableResolver:
             spec = json.loads(content)
             if not isinstance(spec, dict):
                 raise ValueError(f"Config file {filepath} is not a JSON object (got {type(spec).__name__})")
-            # Top-level keys already merged that this file overrides (key views support set ops).
-            overridden = merged_spec.keys() & spec.keys()
-            if overridden:
-                logger.warning(
-                    "Key(s) in %s override an earlier value: %s",
-                    filepath,
-                    ", ".join(sorted(overridden)),
-                )
-            merged_spec.update(spec)
+            merged_spec = self._deep_merge(merged_spec, spec, "")
         return merged_spec
 
 
@@ -201,7 +238,7 @@ def configure_json(filepath: str, *, dbutils=None, var_filepath: str = None) -> 
 
 
 def configure_jsons(filepaths: list[str], *, dbutils=None, var_filepaths: list[str] = None) -> dict:
-    """Read and merge several JSON config files, resolving ${VAR} placeholders in one call.
+    """Read and deep-merge several JSON config files, resolving ${VAR} placeholders in one call.
 
     Convenience wrapper that instantiates a VariableResolver with ``dbutils`` and returns
     ``read_jsons(filepaths, var_filepaths=var_filepaths)``. ``dbutils`` is only needed when a

@@ -270,7 +270,7 @@ def test_read_jsons_merges_and_substitutes(mock_dbutils, write_json):
 
 
 def test_configure_jsons_merges_distinct_keys(mock_dbutils, write_json):
-    """configure_jsons shallow-merges several config files into one object."""
+    """configure_jsons merges the distinct keys of several config files into one object."""
     var_path = write_json("vars.json", {"HOST": "example.com"})
     a_path = write_json("a.json", {"endpoint": "https://${HOST}"})
     b_path = write_json("b.json", {"db": "grads"})
@@ -293,14 +293,99 @@ def test_configure_jsons_later_file_wins_on_conflict(write_json, mocker):
     assert "port" in warning.call_args.args[0] % warning.call_args.args[1:]
 
 
-def test_configure_jsons_shallow_merge_replaces_nested_object(write_json):
-    """Merge is shallow: a conflicting top-level object is replaced wholesale, not deep-merged."""
+def test_configure_jsons_deep_merges_nested_object(write_json):
+    """Merge is deep: a conflicting top-level object is merged key by key, not replaced wholesale."""
     a_path = write_json("a.json", {"db": {"host": "h", "port": 1}})
     b_path = write_json("b.json", {"db": {"port": 2}})
 
     result = configure_jsons([a_path, b_path])
 
-    assert result == {"db": {"port": 2}}
+    assert result == {"db": {"host": "h", "port": 2}}
+
+
+def test_configure_jsons_appends_lists(write_json):
+    """Lists at the same key are concatenated (later file's items appended), not replaced."""
+    a_path = write_json("a.json", {"steps": ["a", "b"]})
+    b_path = write_json("b.json", {"steps": ["c"]})
+
+    result = configure_jsons([a_path, b_path])
+
+    assert result == {"steps": ["a", "b", "c"]}
+
+
+def test_configure_jsons_deep_merges_recursively(write_json):
+    """Deep merge descends through nested objects, appending lists and last-wins on scalars."""
+    a_path = write_json("a.json", {"job": {"tags": ["x"], "cfg": {"retries": 1, "timeout": 30}}})
+    b_path = write_json("b.json", {"job": {"tags": ["y"], "cfg": {"retries": 3}}, "extra": True})
+
+    result = configure_jsons([a_path, b_path])
+
+    assert result == {"job": {"tags": ["x", "y"], "cfg": {"retries": 3, "timeout": 30}}, "extra": True}
+
+
+def test_configure_jsons_raises_on_conflicting_types(write_json):
+    """A key given incompatible shapes by two files (list vs object) raises ValueError."""
+    a_path = write_json("a.json", {"db": ["a", "b"]})
+    b_path = write_json("b.json", {"db": {"host": "h"}})
+
+    with pytest.raises(ValueError, match="Conflicting types for 'db'"):
+        configure_jsons([a_path, b_path])
+
+
+def test_configure_jsons_null_overrides_container_with_warning(mock_dbutils, write_json, mocker):
+    """A JSON null opposite a container is a last-wins override (not a raise), logged as a warning."""
+    var_path = write_json("vars.json", {"NONE": None})
+    a_path = write_json("a.json", {"db": {"host": "h"}})
+    b_path = write_json("b.json", {"db": "${NONE}"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = configure_jsons([a_path, b_path], dbutils=mock_dbutils, var_filepaths=[var_path])
+
+    assert result == {"db": None}
+    warning.assert_called_once()
+    assert "db" in warning.call_args.args[0] % warning.call_args.args[1:]
+
+
+def test_configure_jsons_container_overrides_null_with_warning(mock_dbutils, write_json, mocker):
+    """A container opposite an earlier null wins as a last-wins override, logged as a warning."""
+    var_path = write_json("vars.json", {"NONE": None})
+    a_path = write_json("a.json", {"db": "${NONE}"})
+    b_path = write_json("b.json", {"db": {"host": "h"}})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = configure_jsons([a_path, b_path], dbutils=mock_dbutils, var_filepaths=[var_path])
+
+    assert result == {"db": {"host": "h"}}
+    warning.assert_called_once()
+    assert "db" in warning.call_args.args[0] % warning.call_args.args[1:]
+
+
+def test_configure_jsons_list_append_logs_info(write_json, mocker):
+    """Appending lists is non-lossy, so it is logged at INFO rather than as a warning."""
+    a_path = write_json("a.json", {"steps": ["a"]})
+    b_path = write_json("b.json", {"steps": ["b"]})
+    info = mocker.patch("brickvar.config.logger.info")
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    configure_jsons([a_path, b_path])
+
+    info.assert_called_once()
+    assert "steps" in info.call_args.args[0] % info.call_args.args[1:]
+    warning.assert_not_called()
+
+
+def test_configure_jsons_identical_scalar_logs_info(write_json, mocker):
+    """Redefining a scalar with an equal value discards nothing, so it is logged at INFO."""
+    a_path = write_json("a.json", {"port": 5})
+    b_path = write_json("b.json", {"port": 5})
+    info = mocker.patch("brickvar.config.logger.info")
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = configure_jsons([a_path, b_path])
+
+    assert result == {"port": 5}
+    info.assert_called_once()
+    warning.assert_not_called()
 
 
 def test_configure_jsons_merges_variables_across_files(mock_dbutils, write_json):
