@@ -65,11 +65,12 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 ## Current status
 
 - `pytest`: **49 passing**. `python -m build` + `twine check dist/*`: passing.
-- Latest on PyPI: **0.0.5** (https://pypi.org/project/brickvar/) — deep-merge for `read_jsons`
-  / `configure_jsons` (dicts merge, lists concatenate, scalars last-wins, mismatched containers
-  raise, null↔container is a warned last-wins override).
-- Prior release 0.0.4 — `VariableResolver` rename, single-source version, and multi-file
-  merging (`read_jsons` / `configure_jsons`, then shallow, now deep as of 0.0.5).
+- Latest on PyPI: **0.0.6** (https://pypi.org/project/brickvar/) — `seq` counter-sequence
+  variable type (a single delimited string from one variable), plus raise-on-invalid-shape
+  validation for secret and mutually-exclusive `env`/`seq` entries.
+- Prior release 0.0.5 — deep-merge for `read_jsons` / `configure_jsons` (dicts merge, lists
+  concatenate, scalars last-wins, mismatched containers raise, null↔container is a warned
+  last-wins override).
 
 ## Dev setup
 
