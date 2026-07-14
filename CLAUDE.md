@@ -72,16 +72,13 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 ## Current status
 
 - `pytest`: **55 passing**. `python -m build` + `twine check dist/*`: passing.
-- Version bumped to **0.0.7** (release in progress): `seq` gains an **`as`** key — `"array"`
-  splices a sequence as sibling elements into the enclosing JSON array (vs. the default
-  `"string"`, a delimited string). Acts like `null`: only on a complete `"${VAR}"` value.
-  Also: `seq` `count` must now be **positive** (0 raises, was allowed in 0.0.6).
-- Latest on PyPI: **0.0.6** (https://pypi.org/project/brickvar/) — `seq` counter-sequence
-  variable type (a single delimited string from one variable), plus raise-on-invalid-shape
-  validation for secret and mutually-exclusive `env`/`seq` entries.
-- Prior release 0.0.5 — deep-merge for `read_jsons` / `configure_jsons` (dicts merge, lists
-  concatenate, scalars last-wins, mismatched containers raise, null↔container is a warned
-  last-wins override).
+- Latest on PyPI: **0.0.7** (https://pypi.org/project/brickvar/) — `seq` gains an **`as`** key:
+  `"array"` splices a sequence as sibling elements into the enclosing JSON array (vs. the default
+  `"string"`, a delimited string), acting like `null` on a complete `"${VAR}"` value; and `seq`
+  `count` must now be **positive** (0 raises, was allowed in 0.0.6).
+- Prior release 0.0.6 — `seq` counter-sequence variable type (a single delimited string from one
+  variable), plus raise-on-invalid-shape validation for secret and mutually-exclusive `env`/`seq`
+  entries.
 
 ## Dev setup
 
