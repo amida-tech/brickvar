@@ -64,16 +64,12 @@ def test_read_variables_secret_scope_from_environment(mock_dbutils, monkeypatch,
     assert result["SCOPE"] == "NeoSecretScope"
 
 
-def test_read_variables_skips_incomplete_secret(mock_dbutils, write_json):
-    """A dict missing scope or key is not treated as a secret and is left out of the result."""
-    var_path = write_json(
-        "vars.json",
-        {"NO_KEY": {"scope": "s"}, "NO_SCOPE": {"key": "k"}, "GOOD": "literal"},
-    )
+def test_read_variables_raises_on_incomplete_secret(mock_dbutils, write_json):
+    """A secret entry with scope but no key raises ValueError and is not fetched."""
+    var_path = write_json("vars.json", {"NO_KEY": {"scope": "s"}})
 
-    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
-
-    assert result == {"GOOD": "literal"}
+    with pytest.raises(ValueError, match="needs both 'scope' and 'key'"):
+        VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
     mock_dbutils.secrets.get.assert_not_called()
 
 
@@ -102,16 +98,21 @@ def test_read_variables_logs_error_for_secret_entry_with_unexpected_key(mock_dbu
     assert "bogus" in error.call_args.args[-1]
 
 
-def test_read_variables_logs_error_for_unpaired_scope_or_key(mock_dbutils, write_json, mocker):
-    """A secret entry with only one of scope/key logs an error and is not fetched."""
-    var_path = write_json("vars.json", {"NO_KEY": {"scope": "s"}, "NO_SCOPE": {"key": "k"}})
-    error = mocker.patch("brickvar.config.logger.error")
+def test_read_variables_raises_on_unpaired_key_without_scope(mock_dbutils, write_json):
+    """A secret entry with key but no scope raises ValueError and is not fetched."""
+    var_path = write_json("vars.json", {"NO_SCOPE": {"key": "k"}})
 
-    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
-
-    assert not result
-    assert error.call_count == 2
+    with pytest.raises(ValueError, match="needs both 'scope' and 'key'"):
+        VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
     mock_dbutils.secrets.get.assert_not_called()
+
+
+def test_read_variables_raises_on_env_and_seq(mock_dbutils, write_json):
+    """An entry with both 'env' and 'seq' is ambiguous and raises ValueError."""
+    var_path = write_json("vars.json", {"X": {"env": "HOME", "seq": "s{i}", "count": 1}})
+
+    with pytest.raises(ValueError, match="both 'env' and 'seq'"):
+        VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
 
 def test_read_variables_logs_no_error_for_valid_entries(mock_dbutils, write_json, mocker):

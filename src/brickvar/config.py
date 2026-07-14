@@ -73,6 +73,8 @@ class VariableResolver:
                 result[var_name] = None
             elif isinstance(var_spec, dict) and "env" in var_spec:
                 extra = set(var_spec) - {"env"}
+                if "seq" in extra:
+                    raise ValueError(f"Variable {var_name!r}: entry has both 'env' and 'seq'")
                 if extra:
                     logger.error("Variable %r: env entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
                 result[var_name] = os.environ[var_spec["env"]]
@@ -87,7 +89,7 @@ class VariableResolver:
             if extra:
                 logger.error("Variable %r: secret entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
             if ("scope" in var_spec) != ("key" in var_spec):
-                logger.error("Variable %r: secret entry needs both 'scope' and 'key'; one is missing", var_name)
+                raise ValueError(f"Variable {var_name!r}: secret entry needs both 'scope' and 'key'; one is missing")
             scope = var_spec.get("scope")
             key = var_spec.get("key")
             if scope and key:

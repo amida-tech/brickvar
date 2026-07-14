@@ -64,7 +64,7 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 
 ## Current status
 
-- `pytest`: **48 passing**. `python -m build` + `twine check dist/*`: passing.
+- `pytest`: **49 passing**. `python -m build` + `twine check dist/*`: passing.
 - Latest on PyPI: **0.0.5** (https://pypi.org/project/brickvar/) — deep-merge for `read_jsons`
   / `configure_jsons` (dicts merge, lists concatenate, scalars last-wins, mismatched containers
   raise, null↔container is a warned last-wins override).
