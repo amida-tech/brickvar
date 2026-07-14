@@ -206,8 +206,7 @@ class VariableResolver:
                 logger.warning("'%s' overridden: %r -> %r", path, base, incoming)
                 return incoming
             raise ValueError(
-                f"Conflicting types for '{path}': cannot merge "
-                f"{type(base).__name__} with {type(incoming).__name__}"
+                f"Conflicting types for '{path}': cannot merge " f"{type(base).__name__} with {type(incoming).__name__}"
             )
         if base == incoming:
             logger.info("'%s' redefined with an identical value", path)
