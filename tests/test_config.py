@@ -1,9 +1,14 @@
 """Tests for brickvar.config.VariableResolver."""
 
+import json
+from pathlib import Path
+
 import pytest
 
 from brickvar import VariableResolver, configure_json, configure_jsons
 from brickvar.config import unresolved_variables
+
+DATA_DIR = Path(__file__).parent / "data"
 
 
 def test_read_variables_literal_and_cross_reference(mock_dbutils, write_json):
@@ -171,13 +176,12 @@ def test_read_variables_seq_custom_start_step_sep(mock_dbutils, write_json):
     assert result == {"IDS": "N10|N15|N20"}
 
 
-def test_read_variables_seq_count_zero(mock_dbutils, write_json):
-    """A seq with count 0 expands to an empty string."""
+def test_read_variables_seq_count_zero_raises(mock_dbutils, write_json):
+    """A seq with count 0 raises ValueError (count must be positive)."""
     var_path = write_json("vars.json", {"IDS": {"seq": "X{i}", "count": 0}})
 
-    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
-
-    assert result == {"IDS": ""}
+    with pytest.raises(ValueError, match="'count' must be positive"):
+        VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
 
 def test_read_variables_seq_references_earlier_variable(mock_dbutils, write_json):
@@ -192,6 +196,32 @@ def test_read_variables_seq_references_earlier_variable(mock_dbutils, write_json
     assert result["IDS"] == "ABD01, ABD02"
 
 
+def test_read_variables_seq_as_array(mock_dbutils, write_json):
+    """A seq with "as": "array" resolves to a list of strings rather than a joined string."""
+    var_path = write_json("vars.json", {"IDS": {"seq": "ABD{i:02d}", "count": 3, "as": "array"}})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"IDS": ["ABD01", "ABD02", "ABD03"]}
+
+
+def test_read_variables_seq_as_string_explicit(mock_dbutils, write_json):
+    """An explicit "as": "string" matches the default (a joined delimited string)."""
+    var_path = write_json("vars.json", {"IDS": {"seq": "ABD{i:02d}", "count": 3, "as": "string"}})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"IDS": "ABD01, ABD02, ABD03"}
+
+
+def test_read_variables_seq_invalid_as_raises(mock_dbutils, write_json):
+    """A seq whose "as" is neither 'string' nor 'array' raises ValueError."""
+    var_path = write_json("vars.json", {"IDS": {"seq": "X{i}", "count": 2, "as": "tuple"}})
+
+    with pytest.raises(ValueError, match="seq 'as' must be 'string' or 'array'"):
+        VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+
 def test_read_variables_seq_requires_count(mock_dbutils, write_json):
     """A seq entry without count raises ValueError."""
     var_path = write_json("vars.json", {"IDS": {"seq": "X{i}"}})
@@ -204,7 +234,7 @@ def test_read_variables_seq_negative_count_raises(mock_dbutils, write_json):
     """A seq with a negative count raises ValueError."""
     var_path = write_json("vars.json", {"IDS": {"seq": "X{i}", "count": -1}})
 
-    with pytest.raises(ValueError, match="'count' must be non-negative"):
+    with pytest.raises(ValueError, match="'count' must be positive"):
         VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
 
@@ -236,6 +266,29 @@ def test_read_json_substitutes_seq(mock_dbutils, write_json):
     result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
 
     assert result == {"select": "col1, col2, col3"}
+
+
+def test_read_json_splices_seq_array(mock_dbutils, write_json):
+    """An "as": "array" seq splices its items as sibling elements into the enclosing array."""
+    var_path = write_json("vars.json", {"TABLES": {"seq": "ABD{i:02d}", "count": 3, "as": "array"}})
+    doc_path = write_json("doc.json", {"columns": ["OTHER", "${TABLES}", "LAST"]})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"columns": ["OTHER", "ABD01", "ABD02", "ABD03", "LAST"]}
+
+
+def test_read_json_seq_array_embedded_in_string_warns(mock_dbutils, write_json, mocker):
+    """An array seq embedded in a larger string cannot become a JSON array and is left intact with a warning."""
+    var_path = write_json("vars.json", {"TABLES": {"seq": "ABD{i}", "count": 2, "as": "array"}})
+    doc_path = write_json("doc.json", {"path": "prefix-${TABLES}"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"path": "prefix-${TABLES}"}
+    warning.assert_called_once()
+    assert "TABLES" in warning.call_args.args[-1]
 
 
 def test_read_json_substitutes_null(mock_dbutils, write_json):
@@ -539,6 +592,26 @@ def test_configure_jsons_raises_on_non_object_config(mock_dbutils, write_json):
 
     with pytest.raises(ValueError, match="not a JSON object"):
         configure_jsons([a_path, b_path], dbutils=mock_dbutils)
+
+
+def test_seq_array_gold_file(mock_dbutils):
+    """Resolve committed config.json against vars.json and compare to the gold expected.json.
+
+    The three files in tests/data/seq_array/ make the JSON inputs and output visible on disk:
+    - vars.json    - variable definitions, mixing "as": "array" and default string seqs
+    - config.json  - the config document with ${VAR} placeholders
+    - expected.json - the gold result the resolver must produce
+    """
+    case = DATA_DIR / "seq_array"
+    expected = json.loads((case / "expected.json").read_text(encoding="utf-8"))
+
+    result = configure_json(
+        str(case / "config.json"),
+        dbutils=mock_dbutils,
+        var_filepath=str(case / "vars.json"),
+    )
+
+    assert result == expected
 
 
 def test_unresolved_variables_helper():
