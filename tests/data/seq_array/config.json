@@ -1,0 +1,7 @@
+{
+  "columns": ["OTHER", "${TABLE_IDS}", "LAST"],
+  "select": "${COLUMNS}",
+  "single": ["only", "${ONE_ID}"],
+  "prefixed": ["${PREFIXED_IDS}"],
+  "in_clause": "SELECT * FROM t WHERE id IN (${COLUMNS})"
+}

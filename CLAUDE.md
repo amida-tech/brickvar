@@ -45,12 +45,19 @@ Each entry maps a name to one of:
 - a **Databricks / Azure Key Vault secret** — `{"scope": ..., "key": ..., "base"?: ...}`,
   read via `dbutils.secrets`.
 - a **counter sequence** (since 0.0.6) — `{"seq": ..., "count": ..., "start"?: ..., "step"?: ...,
-  "sep"?: ...}`, expanded to a single delimited **string**. `seq` is a `str.format` template
-  whose `{i}` counter carries any zero-padding (`"ABD{i:02d}"` → `ABD01`); it is `${VAR}`-substituted
-  first, so it may reference an earlier variable. The counter runs `count` values from `start`
-  (default 1) in steps of `step` (default 1), joined by `sep` (default `", "`), e.g.
-  `{"seq": "ABD{i:02d}", "count": 3}` → `"ABD01, ABD02, ABD03"`. A missing `count`, or a negative
-  `count`/`step`, raises `ValueError`; an unexpected key logs an error (like `env`/secret entries).
+  "sep"?: ..., "as"?: ...}`. `seq` is a `str.format` template whose `{i}` counter carries any
+  zero-padding (`"ABD{i:02d}"` → `ABD01`); it is `${VAR}`-substituted first, so it may reference an
+  earlier variable. The counter runs `count` values from `start` (default 1) in steps of `step`
+  (default 1). **`as`** (since 0.0.7) selects the output form: `"string"` (the default) joins the
+  items with `sep` (default `", "`) into one delimited **string**, e.g.
+  `{"seq": "ABD{i:02d}", "count": 3}` → `"ABD01, ABD02, ABD03"`; `"array"` **splices** the items as
+  sibling elements into the enclosing JSON array (`sep` unused) — so a config
+  `["OTHER", "${TABLE_IDS}"]` with `{"seq": "ABD{i:02d}", "count": 3, "as": "array"}` becomes
+  `["OTHER", "ABD01", "ABD02", "ABD03"]`, **not** a nested sub-array. Like a `null` variable, an
+  array acts only on a **complete** `"${VAR}"` string value; embedded in a larger string it's left
+  intact with a warning. A missing `count`, a non-positive `count`, a negative `step`, or an `as`
+  other than `"string"`/`"array"` raises `ValueError`; an unexpected key logs an error (like
+  `env`/secret entries).
 
 Resolution is two-pass, so a secret's `scope`/`key` can reference already-resolved literal
 or environment values. Unknown `${VAR}` placeholders are left intact.
@@ -64,12 +71,17 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 
 ## Current status
 
-- `pytest`: **49 passing**. `python -m build` + `twine check dist/*`: passing.
-- Latest on PyPI: **0.0.5** (https://pypi.org/project/brickvar/) — deep-merge for `read_jsons`
-  / `configure_jsons` (dicts merge, lists concatenate, scalars last-wins, mismatched containers
-  raise, null↔container is a warned last-wins override).
-- Prior release 0.0.4 — `VariableResolver` rename, single-source version, and multi-file
-  merging (`read_jsons` / `configure_jsons`, then shallow, now deep as of 0.0.5).
+- `pytest`: **55 passing**. `python -m build` + `twine check dist/*`: passing.
+- Version bumped to **0.0.7** (release in progress): `seq` gains an **`as`** key — `"array"`
+  splices a sequence as sibling elements into the enclosing JSON array (vs. the default
+  `"string"`, a delimited string). Acts like `null`: only on a complete `"${VAR}"` value.
+  Also: `seq` `count` must now be **positive** (0 raises, was allowed in 0.0.6).
+- Latest on PyPI: **0.0.6** (https://pypi.org/project/brickvar/) — `seq` counter-sequence
+  variable type (a single delimited string from one variable), plus raise-on-invalid-shape
+  validation for secret and mutually-exclusive `env`/`seq` entries.
+- Prior release 0.0.5 — deep-merge for `read_jsons` / `configure_jsons` (dicts merge, lists
+  concatenate, scalars last-wins, mismatched containers raise, null↔container is a warned
+  last-wins override).
 
 ## Dev setup
 
