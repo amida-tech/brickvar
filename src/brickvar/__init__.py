@@ -3,4 +3,4 @@
 from brickvar.config import VariableResolver, configure_json, configure_jsons
 
 __all__ = ["VariableResolver", "configure_json", "configure_jsons"]
-__version__ = "0.0.5"
+__version__ = "0.0.6"
