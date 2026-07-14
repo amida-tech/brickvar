@@ -5,6 +5,8 @@ Variables come from literals, environment variables, and Azure Key Vault secrets
 ``${VAR}`` placeholders of arbitrary JSON files.
 """
 
+from __future__ import annotations
+
 import os
 import json
 import logging
@@ -39,8 +41,9 @@ class VariableResolver:
         ``null`` (resolved to ``None``); an environment-variable reference ``{"env": "NAME"}``
         resolved from os.environ; an Azure Key Vault secret
         ``{"scope": ..., "key": ..., "base"?: ...}`` read via dbutils; or a counter sequence
-        ``{"seq": ..., "count": ..., "start"?: ..., "step"?: ..., "sep"?: ...}`` expanded to a
-        single delimited string (see _resolve_seq).
+        ``{"seq": ..., "count": ..., "start"?: ..., "step"?: ..., "sep"?: ..., "as"?: ...}``
+        expanded to a single delimited string, or to a list of strings when ``as`` is
+        ``"array"`` (see _resolve_seq).
 
         Resolution is two-pass so entries can reference each other: the first pass resolves the
         literal and environment values, and the second resolves the secrets, substituting any
@@ -64,10 +67,11 @@ class VariableResolver:
         # First pass: literal, null, and environment values, which secret entries may reference.
         for var_name, var_spec in content.items():
             if isinstance(var_spec, str):
-                # Null-valued variables cannot be embedded in a string, so omit them from the
-                # cross-reference mapping; their ${VAR} placeholders are left intact here.
+                # Only string values can be embedded in another string, so restrict the
+                # cross-reference mapping to them; null- and array-valued variables are omitted
+                # and their ${VAR} placeholders are left intact here.
                 result[var_name] = Template(var_spec).safe_substitute(
-                    **{name: value for name, value in result.items() if value is not None}
+                    **{name: value for name, value in result.items() if isinstance(value, str)}
                 )
             elif var_spec is None:
                 result[var_name] = None
@@ -93,7 +97,7 @@ class VariableResolver:
             scope = var_spec.get("scope")
             key = var_spec.get("key")
             if scope and key:
-                resolved = {name: value for name, value in result.items() if value is not None}
+                resolved = {name: value for name, value in result.items() if isinstance(value, str)}
                 value = self.dbutils.secrets.get(
                     Template(scope).safe_substitute(**resolved),
                     Template(key).safe_substitute(**resolved),
@@ -103,43 +107,55 @@ class VariableResolver:
         return result
 
     @staticmethod
-    def _resolve_seq(var_name: str, var_spec: dict, resolved: dict) -> str:
-        """Expand a ``seq`` variable spec into a single delimited string.
+    def _resolve_seq(var_name: str, var_spec: dict, resolved: dict) -> str | list[str]:
+        """Expand a ``seq`` variable spec into a delimited string or a list of strings.
 
         The ``seq`` value is a ``str.format`` template with a ``{i}`` counter field (its format
         spec carries any zero-padding, e.g. ``ABD{i:02d}`` -> ``ABD01``); it is first
         ``${VAR}``-substituted from ``resolved`` so it may reference earlier variables. The
-        counter runs ``count`` values from ``start`` (default 1) in steps of ``step`` (default
-        1), and the rendered items are joined with ``sep`` (default ``", "``). ``count`` is
-        required and both ``count`` and ``step`` must be non-negative; a missing or out-of-range
-        value raises ``ValueError``.
+        counter runs ``count`` values from ``start`` (default 1) in steps of ``step`` (default 1).
+
+        ``as`` selects the output form. ``"string"`` (the default) joins the rendered items with
+        ``sep`` (default ``", "``) into one string. ``"array"`` returns the items as a list, which
+        ``read_json`` splices as sibling elements into the JSON array holding the ``"${VAR}"``
+        placeholder -- ``["OTHER", "${VAR}"]`` -> ``["OTHER", "a", "b"]`` -- rather than nesting a
+        sub-array (``sep`` is unused in this mode). ``count`` is required and must be positive,
+        ``step`` must be non-negative; a missing or out-of-range value, or an ``as`` other than
+        ``"string"`` or ``"array"``, raises ``ValueError``.
         """
-        extra = set(var_spec) - {"seq", "start", "count", "step", "sep"}
+        extra = set(var_spec) - {"seq", "start", "count", "step", "sep", "as"}
         if extra:
             logger.error("Variable %r: seq entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
         if "count" not in var_spec:
             raise ValueError(f"Variable {var_name!r}: seq entry requires a 'count'")
+        as_kind = var_spec.get("as", "string")
+        if as_kind not in ("string", "array"):
+            raise ValueError(f"Variable {var_name!r}: seq 'as' must be 'string' or 'array', got {as_kind!r}")
         start = var_spec.get("start", 1)
         step = var_spec.get("step", 1)
         count = var_spec["count"]
-        if count < 0:
-            raise ValueError(f"Variable {var_name!r}: seq 'count' must be non-negative, got {count}")
+        if count < 1:
+            raise ValueError(f"Variable {var_name!r}: seq 'count' must be positive, got {count}")
         if step < 0:
             raise ValueError(f"Variable {var_name!r}: seq 'step' must be non-negative, got {step}")
         template = Template(var_spec["seq"]).safe_substitute(
-            **{name: value for name, value in resolved.items() if value is not None}
+            **{name: value for name, value in resolved.items() if isinstance(value, str)}
         )
+        items = [template.format(i=start + step * n) for n in range(count)]
+        if as_kind == "array":
+            return items
         sep = var_spec.get("sep", ", ")
-        return sep.join(template.format(i=start + step * n) for n in range(count))
+        return sep.join(items)
 
     def read_json(self, filepath: str, var_filepath: str = None) -> dict:
         """Read a JSON file, substituting ${VAR} placeholders from var_filepath when given.
 
-        A variable whose value is ``None`` substitutes a JSON ``null``: its placeholder must be a
-        complete JSON string value (``"${VAR}"`` or ``"$VAR"``), which is replaced by the bare
-        token ``null``. A null variable embedded in a larger string cannot become null and is left
-        intact with a warning. Any placeholder the variables file does not supply is likewise left
-        intact and logged as a warning.
+        A variable whose value is not a string acts on a *complete* JSON string value
+        (``"${VAR}"`` or ``"$VAR"``), never one embedded in a larger string. A ``None`` becomes a
+        bare JSON ``null``. A ``seq`` array is spliced as comma-separated string elements into the
+        JSON array that holds the placeholder (``["OTHER", "${VAR}"]`` -> ``["OTHER", "a", "b"]``).
+        Such a variable embedded in a larger string cannot be substituted and is left intact with a
+        warning, as is any placeholder the variables file does not supply.
         """
         with open(filepath, encoding="utf-8") as f:
             content = f.read()
@@ -154,23 +170,31 @@ class VariableResolver:
 
         Split out from read_json so callers with an already-resolved variables mapping (e.g.
         one merged from several files) can substitute it into a document without re-reading a
-        variables file. See read_json for the null-substitution and unresolved-variable rules.
+        variables file. See read_json for the null/array-substitution and unresolved-variable
+        rules.
         """
         unresolved = unresolved_variables(content, variables)
         if unresolved:
             logger.warning("Unresolved variable(s) in %s: %s", filepath, ", ".join(unresolved))
-        # Replace each null variable's quoted placeholder with a bare JSON null, then
-        # textually substitute the remaining (string-valued) variables.
-        str_vars = {name: value for name, value in variables.items() if value is not None}
+        # Non-string values cannot be embedded in a larger string; each acts on a complete
+        # "${VAR}" placeholder. A null becomes a bare JSON ``null``. A seq array (a list, always
+        # non-empty since count must be positive) is spliced into its enclosing JSON array as
+        # comma-separated string elements -- ["OTHER", "${VAR}"] -> ["OTHER", "a", "b"]. The
+        # remaining string-valued variables are then textually substituted.
+        str_vars = {name: value for name, value in variables.items() if isinstance(value, str)}
         null_vars = [name for name, value in variables.items() if value is None]
+        array_vars = {name: value for name, value in variables.items() if isinstance(value, list)}
         for name in null_vars:
             content = content.replace(f'"${{{name}}}"', "null").replace(f'"${name}"', "null")
-        embedded_nulls = sorted(set(null_vars) & set(unresolved_variables(content, str_vars)))
-        if embedded_nulls:
+        for name, items in array_vars.items():
+            elements = ", ".join(json.dumps(item) for item in items)
+            content = content.replace(f'"${{{name}}}"', elements).replace(f'"${name}"', elements)
+        embedded = sorted((set(null_vars) | set(array_vars)) & set(unresolved_variables(content, str_vars)))
+        if embedded:
             logger.warning(
-                "Null variable(s) embedded in a string in %s, left unresolved: %s",
+                "Non-string variable(s) embedded in a string in %s, left unresolved: %s",
                 filepath,
-                ", ".join(embedded_nulls),
+                ", ".join(embedded),
             )
         return Template(content).safe_substitute(**str_vars)
 

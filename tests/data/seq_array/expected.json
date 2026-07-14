@@ -1,0 +1,7 @@
+{
+  "columns": ["OTHER", "ABD01", "ABD02", "ABD03", "LAST"],
+  "select": "col1, col2, col3",
+  "single": ["only", "X1"],
+  "prefixed": ["prod-node1", "prod-node2"],
+  "in_clause": "SELECT * FROM t WHERE id IN (col1, col2, col3)"
+}

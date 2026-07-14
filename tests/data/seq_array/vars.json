@@ -1,0 +1,7 @@
+{
+  "TABLE_IDS": {"seq": "ABD{i:02d}", "count": 3, "as": "array"},
+  "COLUMNS": {"seq": "col{i}", "count": 3},
+  "ONE_ID": {"seq": "X{i}", "count": 1, "as": "array"},
+  "ENV": "prod",
+  "PREFIXED_IDS": {"seq": "${ENV}-node{i}", "count": 2, "as": "array"}
+}
