@@ -140,6 +140,103 @@ def test_read_variables_null(mock_dbutils, write_json):
     assert result == {"OPT": None, "LIT": "x"}
 
 
+def test_read_variables_seq_zero_padded(mock_dbutils, write_json):
+    """A seq entry expands to a delimited string, its {i} counter honoring the format spec."""
+    var_path = write_json("vars.json", {"ABD_IDS": {"seq": "ABD{i:02d}", "count": 3}})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"ABD_IDS": "ABD01, ABD02, ABD03"}
+
+
+def test_read_variables_seq_defaults(mock_dbutils, write_json):
+    """seq defaults to start 1 and separator ", " with no padding on a bare {i}."""
+    var_path = write_json("vars.json", {"CDE_IDS": {"seq": "CDE{i}", "count": 3}})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"CDE_IDS": "CDE1, CDE2, CDE3"}
+
+
+def test_read_variables_seq_custom_start_step_sep(mock_dbutils, write_json):
+    """seq honors explicit start, step, and separator."""
+    var_path = write_json(
+        "vars.json",
+        {"IDS": {"seq": "N{i}", "start": 10, "step": 5, "count": 3, "sep": "|"}},
+    )
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"IDS": "N10|N15|N20"}
+
+
+def test_read_variables_seq_count_zero(mock_dbutils, write_json):
+    """A seq with count 0 expands to an empty string."""
+    var_path = write_json("vars.json", {"IDS": {"seq": "X{i}", "count": 0}})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"IDS": ""}
+
+
+def test_read_variables_seq_references_earlier_variable(mock_dbutils, write_json):
+    """A seq template may reference an earlier-resolved variable via ${VAR}."""
+    var_path = write_json(
+        "vars.json",
+        {"PREFIX": "ABD", "IDS": {"seq": "${PREFIX}{i:02d}", "count": 2}},
+    )
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result["IDS"] == "ABD01, ABD02"
+
+
+def test_read_variables_seq_requires_count(mock_dbutils, write_json):
+    """A seq entry without count raises ValueError."""
+    var_path = write_json("vars.json", {"IDS": {"seq": "X{i}"}})
+
+    with pytest.raises(ValueError, match="requires a 'count'"):
+        VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+
+def test_read_variables_seq_negative_count_raises(mock_dbutils, write_json):
+    """A seq with a negative count raises ValueError."""
+    var_path = write_json("vars.json", {"IDS": {"seq": "X{i}", "count": -1}})
+
+    with pytest.raises(ValueError, match="'count' must be non-negative"):
+        VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+
+def test_read_variables_seq_negative_step_raises(mock_dbutils, write_json):
+    """A seq with a negative step raises ValueError."""
+    var_path = write_json("vars.json", {"IDS": {"seq": "X{i}", "count": 2, "step": -1}})
+
+    with pytest.raises(ValueError, match="'step' must be non-negative"):
+        VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+
+def test_read_variables_seq_logs_error_for_unexpected_key(mock_dbutils, write_json, mocker):
+    """A seq entry with an unexpected key logs an error but still resolves."""
+    var_path = write_json("vars.json", {"IDS": {"seq": "X{i}", "count": 2, "bogus": 1}})
+    error = mocker.patch("brickvar.config.logger.error")
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"IDS": "X1, X2"}
+    error.assert_called_once()
+    assert "bogus" in error.call_args.args[-1]
+
+
+def test_read_json_substitutes_seq(mock_dbutils, write_json):
+    """A seq variable substitutes its delimited string into a ${VAR} placeholder."""
+    var_path = write_json("vars.json", {"COLUMNS": {"seq": "col{i}", "count": 3}})
+    doc_path = write_json("doc.json", {"select": "${COLUMNS}"})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"select": "col1, col2, col3"}
+
+
 def test_read_json_substitutes_null(mock_dbutils, write_json):
     """A null variable replaces a complete "${VAR}" string value with a JSON null."""
     var_path = write_json("vars.json", {"DB": None, "HOST": "example.com"})
