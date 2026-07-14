@@ -58,11 +58,11 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 ## Current status
 
 - `pytest`: **38 passing**. `python -m build` + `twine check dist/*`: passing.
-- Latest on PyPI: **0.0.4** (https://pypi.org/project/brickvar/) — `VariableResolver` rename,
-  single-source version, and multi-file merging (`read_jsons` / `configure_jsons`).
-- `__version__` bumped to **0.0.5** on `develop` (not yet on PyPI): deep-merge for `read_jsons`
+- Latest on PyPI: **0.0.5** (https://pypi.org/project/brickvar/) — deep-merge for `read_jsons`
   / `configure_jsons` (dicts merge, lists concatenate, scalars last-wins, mismatched containers
   raise, null↔container is a warned last-wins override).
+- Prior release 0.0.4 — `VariableResolver` rename, single-source version, and multi-file
+  merging (`read_jsons` / `configure_jsons`, then shallow, now deep as of 0.0.5).
 
 ## Dev setup
 
