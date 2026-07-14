@@ -44,6 +44,13 @@ Each entry maps a name to one of:
 - an **environment variable** — `{"env": "NAME"}`,
 - a **Databricks / Azure Key Vault secret** — `{"scope": ..., "key": ..., "base"?: ...}`,
   read via `dbutils.secrets`.
+- a **counter sequence** (since 0.0.6) — `{"seq": ..., "count": ..., "start"?: ..., "step"?: ...,
+  "sep"?: ...}`, expanded to a single delimited **string**. `seq` is a `str.format` template
+  whose `{i}` counter carries any zero-padding (`"ABD{i:02d}"` → `ABD01`); it is `${VAR}`-substituted
+  first, so it may reference an earlier variable. The counter runs `count` values from `start`
+  (default 1) in steps of `step` (default 1), joined by `sep` (default `", "`), e.g.
+  `{"seq": "ABD{i:02d}", "count": 3}` → `"ABD01, ABD02, ABD03"`. A missing `count`, or a negative
+  `count`/`step`, raises `ValueError`; an unexpected key logs an error (like `env`/secret entries).
 
 Resolution is two-pass, so a secret's `scope`/`key` can reference already-resolved literal
 or environment values. Unknown `${VAR}` placeholders are left intact.
@@ -57,7 +64,7 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 
 ## Current status
 
-- `pytest`: **38 passing**. `python -m build` + `twine check dist/*`: passing.
+- `pytest`: **49 passing**. `python -m build` + `twine check dist/*`: passing.
 - Latest on PyPI: **0.0.5** (https://pypi.org/project/brickvar/) — deep-merge for `read_jsons`
   / `configure_jsons` (dicts merge, lists concatenate, scalars last-wins, mismatched containers
   raise, null↔container is a warned last-wins override).

@@ -35,10 +35,12 @@ class VariableResolver:
     def read_variables(self, filepath: str) -> dict:
         """Read configuration variables from a JSON file.
 
-        Each entry maps a name to a value given in one of four forms: a literal string; JSON
+        Each entry maps a name to a value given in one of five forms: a literal string; JSON
         ``null`` (resolved to ``None``); an environment-variable reference ``{"env": "NAME"}``
-        resolved from os.environ; or an Azure Key Vault secret
-        ``{"scope": ..., "key": ..., "base"?: ...}`` read via dbutils.
+        resolved from os.environ; an Azure Key Vault secret
+        ``{"scope": ..., "key": ..., "base"?: ...}`` read via dbutils; or a counter sequence
+        ``{"seq": ..., "count": ..., "start"?: ..., "step"?: ..., "sep"?: ...}`` expanded to a
+        single delimited string (see _resolve_seq).
 
         Resolution is two-pass so entries can reference each other: the first pass resolves the
         literal and environment values, and the second resolves the secrets, substituting any
@@ -71,19 +73,23 @@ class VariableResolver:
                 result[var_name] = None
             elif isinstance(var_spec, dict) and "env" in var_spec:
                 extra = set(var_spec) - {"env"}
+                if "seq" in extra:
+                    raise ValueError(f"Variable {var_name!r}: entry has both 'env' and 'seq'")
                 if extra:
                     logger.error("Variable %r: env entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
                 result[var_name] = os.environ[var_spec["env"]]
+            elif isinstance(var_spec, dict) and "seq" in var_spec:
+                result[var_name] = self._resolve_seq(var_name, var_spec, result)
 
         # Second pass: Key Vault secrets, whose scope/key/base may reference first-pass values.
         for var_name, var_spec in content.items():
-            if not isinstance(var_spec, dict) or "env" in var_spec:
+            if not isinstance(var_spec, dict) or "env" in var_spec or "seq" in var_spec:
                 continue
             extra = set(var_spec) - {"scope", "key", "base"}
             if extra:
                 logger.error("Variable %r: secret entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
             if ("scope" in var_spec) != ("key" in var_spec):
-                logger.error("Variable %r: secret entry needs both 'scope' and 'key'; one is missing", var_name)
+                raise ValueError(f"Variable {var_name!r}: secret entry needs both 'scope' and 'key'; one is missing")
             scope = var_spec.get("scope")
             key = var_spec.get("key")
             if scope and key:
@@ -95,6 +101,36 @@ class VariableResolver:
                 base = var_spec.get("base")
                 result[var_name] = base.format(value) if base else value
         return result
+
+    @staticmethod
+    def _resolve_seq(var_name: str, var_spec: dict, resolved: dict) -> str:
+        """Expand a ``seq`` variable spec into a single delimited string.
+
+        The ``seq`` value is a ``str.format`` template with a ``{i}`` counter field (its format
+        spec carries any zero-padding, e.g. ``ABD{i:02d}`` -> ``ABD01``); it is first
+        ``${VAR}``-substituted from ``resolved`` so it may reference earlier variables. The
+        counter runs ``count`` values from ``start`` (default 1) in steps of ``step`` (default
+        1), and the rendered items are joined with ``sep`` (default ``", "``). ``count`` is
+        required and both ``count`` and ``step`` must be non-negative; a missing or out-of-range
+        value raises ``ValueError``.
+        """
+        extra = set(var_spec) - {"seq", "start", "count", "step", "sep"}
+        if extra:
+            logger.error("Variable %r: seq entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
+        if "count" not in var_spec:
+            raise ValueError(f"Variable {var_name!r}: seq entry requires a 'count'")
+        start = var_spec.get("start", 1)
+        step = var_spec.get("step", 1)
+        count = var_spec["count"]
+        if count < 0:
+            raise ValueError(f"Variable {var_name!r}: seq 'count' must be non-negative, got {count}")
+        if step < 0:
+            raise ValueError(f"Variable {var_name!r}: seq 'step' must be non-negative, got {step}")
+        template = Template(var_spec["seq"]).safe_substitute(
+            **{name: value for name, value in resolved.items() if value is not None}
+        )
+        sep = var_spec.get("sep", ", ")
+        return sep.join(template.format(i=start + step * n) for n in range(count))
 
     def read_json(self, filepath: str, var_filepath: str = None) -> dict:
         """Read a JSON file, substituting ${VAR} placeholders from var_filepath when given.
@@ -170,8 +206,7 @@ class VariableResolver:
                 logger.warning("'%s' overridden: %r -> %r", path, base, incoming)
                 return incoming
             raise ValueError(
-                f"Conflicting types for '{path}': cannot merge "
-                f"{type(base).__name__} with {type(incoming).__name__}"
+                f"Conflicting types for '{path}': cannot merge " f"{type(base).__name__} with {type(incoming).__name__}"
             )
         if base == incoming:
             logger.info("'%s' redefined with an identical value", path)
