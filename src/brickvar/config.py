@@ -34,7 +34,7 @@ class VariableResolver:
         """
         self.dbutils = dbutils
 
-    def read_variables(self, filepath: str) -> dict:
+    def read_variables(self, filepath: str, *, defaults: dict = None) -> dict:
         """Read configuration variables from a JSON file.
 
         Each entry maps a name to a value given in one of five forms: a literal string; JSON
@@ -45,15 +45,49 @@ class VariableResolver:
         expanded to a single delimited string, or to a list of strings when ``as`` is
         ``"array"`` (see _resolve_seq).
 
+        ``defaults`` is an optional mapping of the same entry forms supplied in code rather than
+        in the file. It acts as a base layer: a name the file also defines takes the file's value
+        (with a warning), and one it does not is added (see _merge_raw_variables).
+
         Resolution is two-pass so entries can reference each other: the first pass resolves the
         literal and environment values, and the second resolves the secrets, substituting any
         ``${VAR}`` in their scope/key/base from the already-resolved first-pass values (e.g. a
         secret whose scope comes from an environment variable). Unknown ``${VAR}`` are left intact,
         so plain literal scopes are unaffected.
         """
-        with open(filepath, encoding="utf-8") as f:
-            content = json.load(f)
-        return self._resolve_variables(content)
+        raw_vars = self._merge_raw_variables([filepath], defaults)
+        return self._resolve_variables(raw_vars)
+
+    @staticmethod
+    def _merge_raw_variables(var_filepaths: Iterable[str] = None, defaults: dict = None) -> dict:
+        """Combine ``defaults`` and the raw entries of the given variables files into one mapping.
+
+        ``defaults`` seeds the mapping as the bottom layer, so a name a variables file also
+        defines takes the file's value; the caller's mapping is copied and never mutated. The
+        files are then merged in order, a later one overriding an earlier one. A file that
+        redefines any already-merged name is logged at WARNING, whether that name came from a
+        default or from an earlier file -- one rule for both layers.
+
+        The result still holds unresolved specs: resolving the merged mapping in a single
+        _resolve_variables run is what lets an entry reference one contributed by another layer.
+        Because defaults are merged first, a file entry may reference a default, but a default
+        that references a file-only variable is resolved before that name exists and keeps its
+        ``${VAR}`` intact.
+        """
+        merged = dict(defaults or {})
+        for var_filepath in var_filepaths or ():
+            with open(var_filepath, encoding="utf-8") as f:
+                raw_vars = json.load(f)
+            # Names already merged that this file redefines (dict key views support set ops).
+            overridden = merged.keys() & raw_vars.keys()
+            if overridden:
+                logger.warning(
+                    "Variable(s) in %s override an earlier definition: %s",
+                    var_filepath,
+                    ", ".join(sorted(overridden)),
+                )
+            merged.update(raw_vars)
+        return merged
 
     def _resolve_variables(self, content: dict) -> dict:
         """Resolve a mapping of variable specs (see read_variables) to concrete values.
@@ -84,27 +118,53 @@ class VariableResolver:
                 result[var_name] = os.environ[var_spec["env"]]
             elif isinstance(var_spec, dict) and "seq" in var_spec:
                 result[var_name] = self._resolve_seq(var_name, var_spec, result)
+            elif not isinstance(var_spec, dict):
+                # Any other dict is a secret entry, handled by the second pass. A non-dict that
+                # is not a string or null (a number, a bool, a list) matches no entry form and
+                # cannot be substituted, so it is dropped -- log it rather than skip in silence.
+                logger.error(
+                    "Variable %r: unsupported value of type %s (expected a string, null, or an "
+                    "env/secret/seq object); variable skipped",
+                    var_name,
+                    type(var_spec).__name__,
+                )
 
         # Second pass: Key Vault secrets, whose scope/key/base may reference first-pass values.
         for var_name, var_spec in content.items():
             if not isinstance(var_spec, dict) or "env" in var_spec or "seq" in var_spec:
                 continue
-            extra = set(var_spec) - {"scope", "key", "base"}
-            if extra:
-                logger.error("Variable %r: secret entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
-            if ("scope" in var_spec) != ("key" in var_spec):
-                raise ValueError(f"Variable {var_name!r}: secret entry needs both 'scope' and 'key'; one is missing")
-            scope = var_spec.get("scope")
-            key = var_spec.get("key")
-            if scope and key:
-                resolved = {name: value for name, value in result.items() if isinstance(value, str)}
-                value = self.dbutils.secrets.get(
-                    Template(scope).safe_substitute(**resolved),
-                    Template(key).safe_substitute(**resolved),
-                )
-                base = var_spec.get("base")
-                result[var_name] = base.format(value) if base else value
+            value = self._resolve_secret(var_name, var_spec, result)
+            if value is not None:
+                result[var_name] = value
         return result
+
+    def _resolve_secret(self, var_name: str, var_spec: dict, resolved: dict) -> str | None:
+        """Read a Key Vault secret entry via dbutils, or return None if it names no secret.
+
+        The entry's ``scope`` and ``key`` are ``${VAR}``-substituted from the already-resolved
+        first-pass values in ``resolved`` before the lookup, so either may come from a literal or
+        environment variable; the fetched value is wrapped by the optional ``base`` format string.
+        Supplying only one of ``scope``/``key`` raises ``ValueError`` and an unexpected key logs an
+        error. A dict entry that carries neither (which reaches here only because it is not an
+        ``env`` or ``seq`` entry either) names no secret, so None is returned and the variable is
+        left unset.
+        """
+        extra = set(var_spec) - {"scope", "key", "base"}
+        if extra:
+            logger.error("Variable %r: secret entry has unexpected key(s): %s", var_name, ", ".join(sorted(extra)))
+        if ("scope" in var_spec) != ("key" in var_spec):
+            raise ValueError(f"Variable {var_name!r}: secret entry needs both 'scope' and 'key'; one is missing")
+        scope = var_spec.get("scope")
+        key = var_spec.get("key")
+        if not (scope and key):
+            return None
+        strings = {name: value for name, value in resolved.items() if isinstance(value, str)}
+        value = self.dbutils.secrets.get(
+            Template(scope).safe_substitute(**strings),
+            Template(key).safe_substitute(**strings),
+        )
+        base = var_spec.get("base")
+        return base.format(value) if base else value
 
     @staticmethod
     def _resolve_seq(var_name: str, var_spec: dict, resolved: dict) -> str | list[str]:
@@ -147,8 +207,12 @@ class VariableResolver:
         sep = var_spec.get("sep", ", ")
         return sep.join(items)
 
-    def read_json(self, filepath: str, var_filepath: str = None) -> dict:
-        """Read a JSON file, substituting ${VAR} placeholders from var_filepath when given.
+    def read_json(self, filepath: str, var_filepath: str = None, *, defaults: dict = None) -> dict:
+        """Read a JSON file, substituting ${VAR} placeholders from var_filepath and defaults.
+
+        ``defaults`` is an optional mapping of variable specs supplied in code that fills in
+        names ``var_filepath`` does not define (see _merge_raw_variables). Either source alone
+        is enough: passing ``defaults`` without a variables file still substitutes.
 
         A variable whose value is not a string acts on a *complete* JSON string value
         (``"${VAR}"`` or ``"$VAR"``), never one embedded in a larger string. A ``None`` becomes a
@@ -159,8 +223,10 @@ class VariableResolver:
         """
         with open(filepath, encoding="utf-8") as f:
             content = f.read()
-        if var_filepath is not None:
-            variables = self.read_variables(var_filepath)
+        if var_filepath is not None or defaults:
+            var_filepaths = [var_filepath] if var_filepath is not None else None
+            raw_vars = self._merge_raw_variables(var_filepaths, defaults)
+            variables = self._resolve_variables(raw_vars)
             content = self._substitute(content, variables, filepath)
         return json.loads(content)
 
@@ -238,14 +304,17 @@ class VariableResolver:
             logger.warning("'%s' overridden: %r -> %r", path, base, incoming)
         return incoming
 
-    def read_jsons(self, filepaths: list[str], var_filepaths: list[str] = None) -> dict:
+    def read_jsons(self, filepaths: list[str], var_filepaths: list[str] = None, *, defaults: dict = None) -> dict:
         """Read and deep-merge several JSON config files, substituting ${VAR} placeholders.
 
         The variables files in ``var_filepaths`` are merged *before* resolution: their raw
         entries are combined into a single mapping (a later file's entry overrides an earlier
         one of the same name, with a warning) and then resolved in one two-pass run, so a
-        variable in one file may reference one defined in an earlier file. The resolved
-        variables are substituted into every config file in ``filepaths``.
+        variable in one file may reference one defined in an earlier file. An optional
+        ``defaults`` mapping of variable specs supplied in code is merged underneath them all,
+        filling in names no variables file defines and warned about by the same rule when one
+        does (see _merge_raw_variables); it may be given on its own, without any variables file.
+        The resolved variables are substituted into every config file in ``filepaths``.
 
         The config files are then deep-merged in order into a single object: nested objects
         merge key by key, lists concatenate (a later file's items are appended), and a scalar
@@ -256,28 +325,17 @@ class VariableResolver:
         ``ValueError``. See _deep_merge for the per-conflict logging and read_json for the
         per-file substitution and null rules.
         """
+        substitute = bool(var_filepaths or defaults)
         variables = {}
-        if var_filepaths:
-            merged_raw_vars = {}
-            for var_filepath in var_filepaths:
-                with open(var_filepath, encoding="utf-8") as f:
-                    raw_vars = json.load(f)
-                # Names already merged that this file redefines (dict key views support set ops).
-                overridden = merged_raw_vars.keys() & raw_vars.keys()
-                if overridden:
-                    logger.warning(
-                        "Variable(s) in %s override an earlier definition: %s",
-                        var_filepath,
-                        ", ".join(sorted(overridden)),
-                    )
-                merged_raw_vars.update(raw_vars)
-            variables = self._resolve_variables(merged_raw_vars)
+        if substitute:
+            raw_vars = self._merge_raw_variables(var_filepaths, defaults)
+            variables = self._resolve_variables(raw_vars)
 
         merged_spec = {}
         for filepath in filepaths:
             with open(filepath, encoding="utf-8") as f:
                 content = f.read()
-            if var_filepaths:
+            if substitute:
                 content = self._substitute(content, variables, filepath)
             spec = json.loads(content)
             if not isinstance(spec, dict):
@@ -286,21 +344,27 @@ class VariableResolver:
         return merged_spec
 
 
-def configure_json(filepath: str, *, dbutils=None, var_filepath: str = None) -> dict:
+def configure_json(filepath: str, *, dbutils=None, **kwargs) -> dict:
     """Read a JSON config file and resolve its ${VAR} placeholders in one call.
 
-    Convenience wrapper that instantiates a VariableResolver with ``dbutils`` and returns
-    ``read_json(filepath, var_filepath=var_filepath)``. ``dbutils`` is only needed when the
-    variables file contains Key Vault secrets. See VariableResolver.read_json for details.
+    Convenience wrapper that instantiates a VariableResolver with ``dbutils`` -- needed only when
+    the variables file contains Key Vault secrets -- and returns ``read_json(filepath, **kwargs)``.
+    Every remaining keyword is passed straight through, so see VariableResolver.read_json for them:
+    ``var_filepath`` (the variables file) and ``defaults`` (variable specs given in code that the
+    variables file may override).
     """
-    return VariableResolver(dbutils=dbutils).read_json(filepath, var_filepath=var_filepath)
+    resolver = VariableResolver(dbutils=dbutils)
+    return resolver.read_json(filepath, **kwargs)
 
 
-def configure_jsons(filepaths: list[str], *, dbutils=None, var_filepaths: list[str] = None) -> dict:
+def configure_jsons(filepaths: list[str], *, dbutils=None, **kwargs) -> dict:
     """Read and deep-merge several JSON config files, resolving ${VAR} placeholders in one call.
 
-    Convenience wrapper that instantiates a VariableResolver with ``dbutils`` and returns
-    ``read_jsons(filepaths, var_filepaths=var_filepaths)``. ``dbutils`` is only needed when a
-    variables entry is a Key Vault secret. See VariableResolver.read_jsons for details.
+    Convenience wrapper that instantiates a VariableResolver with ``dbutils`` -- needed only when a
+    variables entry is a Key Vault secret -- and returns ``read_jsons(filepaths, **kwargs)``. Every
+    remaining keyword is passed straight through, so see VariableResolver.read_jsons for them:
+    ``var_filepaths`` (the variables files) and ``defaults`` (variable specs given in code that the
+    variables files may override).
     """
-    return VariableResolver(dbutils=dbutils).read_jsons(filepaths, var_filepaths=var_filepaths)
+    resolver = VariableResolver(dbutils=dbutils)
+    return resolver.read_jsons(filepaths, **kwargs)

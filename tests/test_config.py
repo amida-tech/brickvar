@@ -594,6 +594,163 @@ def test_configure_jsons_raises_on_non_object_config(mock_dbutils, write_json):
         configure_jsons([a_path, b_path], dbutils=mock_dbutils)
 
 
+def test_read_variables_defaults_fill_missing_name(mock_dbutils, write_json):
+    """A default supplies a variable the file does not define, alongside the file's own."""
+    var_path = write_json("vars.json", {"HOST": "file.example.com"})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path, defaults={"PORT": "443"})
+
+    assert result == {"PORT": "443", "HOST": "file.example.com"}
+
+
+def test_read_variables_file_wins_over_default(mock_dbutils, write_json, mocker):
+    """A name defined both in the file and in defaults takes the file's value, with a warning."""
+    var_path = write_json("vars.json", {"HOST": "file.example.com"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path, defaults={"HOST": "default.example.com"})
+
+    assert result == {"HOST": "file.example.com"}
+    warning.assert_called_once()
+    assert "HOST" in warning.call_args.args[0] % warning.call_args.args[1:]
+
+
+def test_read_variables_defaults_not_mutated(mock_dbutils, write_json):
+    """Resolution copies the caller's defaults mapping instead of merging the file into it."""
+    var_path = write_json("vars.json", {"HOST": "file.example.com", "EXTRA": "e"})
+    defaults = {"HOST": "default.example.com"}
+
+    VariableResolver(dbutils=mock_dbutils).read_variables(var_path, defaults=defaults)
+
+    assert defaults == {"HOST": "default.example.com"}
+
+
+def test_read_variables_file_entry_references_default(mock_dbutils, write_json):
+    """A file entry may reference a default with ${VAR}, since defaults are merged first."""
+    var_path = write_json("vars.json", {"CHILD": "${BASE}/child"})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path, defaults={"BASE": "root"})
+
+    assert result == {"BASE": "root", "CHILD": "root/child"}
+
+
+def test_read_variables_defaults_support_every_entry_form(mock_dbutils, monkeypatch, write_json):
+    """Defaults accept the same entry forms as a variables file: literal, null, env, seq, secret."""
+    monkeypatch.setenv("SCOPE_NAME", "kv")
+    var_path = write_json("vars.json", {})
+    defaults = {
+        "LIT": "x",
+        "OPT": None,
+        "SCOPE": {"env": "SCOPE_NAME"},
+        "IDS": {"seq": "ABD{i:02d}", "count": 2, "as": "array"},
+        "JOINED": {"seq": "t{i}", "count": 2},
+        "TOKEN": {"scope": "${SCOPE}", "key": "TOK"},
+    }
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path, defaults=defaults)
+
+    assert result == {
+        "LIT": "x",
+        "OPT": None,
+        "SCOPE": "kv",
+        "IDS": ["ABD01", "ABD02"],
+        "JOINED": "t1, t2",
+        "TOKEN": "kv_TOK_value",
+    }
+
+
+def test_read_variables_logs_error_for_unsupported_value_type(mock_dbutils, write_json, mocker):
+    """A value that is no valid entry form (e.g. a number) is skipped with an error logged."""
+    var_path = write_json("vars.json", {"RETRIES": 3, "HOST": "example.com"})
+    error = mocker.patch("brickvar.config.logger.error")
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"HOST": "example.com"}
+    error.assert_called_once()
+    assert "RETRIES" in error.call_args.args[0] % error.call_args.args[1:]
+
+
+def test_read_variables_dict_entry_naming_no_secret_is_unset(mock_dbutils, write_json):
+    """A dict entry with no env/seq/scope/key names nothing to resolve and is left unset."""
+    var_path = write_json("vars.json", {"EMPTY": {}, "HOST": "example.com"})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"HOST": "example.com"}
+    mock_dbutils.secrets.get.assert_not_called()
+
+
+def test_read_json_defaults_without_variables_file(mock_dbutils, write_json):
+    """Defaults alone resolve a document: no variables file is required."""
+    doc_path = write_json("doc.json", {"endpoint": "https://${HOST}"})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, defaults={"HOST": "example.com"})
+
+    assert result == {"endpoint": "https://example.com"}
+
+
+def test_configure_json_default_overridden_by_variables_file(mock_dbutils, write_json):
+    """configure_json substitutes defaults, with the variables file winning on shared names."""
+    var_path = write_json("vars.json", {"HOST": "file.example.com"})
+    doc_path = write_json("doc.json", {"endpoint": "https://${HOST}:${PORT}"})
+
+    result = configure_json(
+        doc_path,
+        dbutils=mock_dbutils,
+        var_filepath=var_path,
+        defaults={"HOST": "default.example.com", "PORT": "443"},
+    )
+
+    assert result == {"endpoint": "https://file.example.com:443"}
+
+
+def test_configure_json_default_only_no_unresolved_warning(write_json, mocker):
+    """A placeholder supplied only by a default is resolved and not reported as unresolved."""
+    doc_path = write_json("doc.json", {"optional": "${OPT}", "host": "${HOST}"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = configure_json(doc_path, defaults={"OPT": None, "HOST": "example.com"})
+
+    assert result == {"optional": None, "host": "example.com"}
+    warning.assert_not_called()
+
+
+def test_configure_jsons_defaults_without_variables_files(mock_dbutils, write_json):
+    """Defaults alone are substituted into every merged config file."""
+    a_path = write_json("a.json", {"host": "${HOST}"})
+    b_path = write_json("b.json", {"ids": ["${IDS}"]})
+
+    result = configure_jsons(
+        [a_path, b_path],
+        dbutils=mock_dbutils,
+        defaults={"HOST": "example.com", "IDS": {"seq": "ABD{i:02d}", "count": 2, "as": "array"}},
+    )
+
+    assert result == {"host": "example.com", "ids": ["ABD01", "ABD02"]}
+
+
+def test_configure_jsons_default_overridden_by_later_file_warns(mock_dbutils, write_json, mocker):
+    """Whichever variables file overrides a default warns, naming that file only."""
+    base_path = write_json("base.vars.json", {"PORT": "80"})
+    prod_path = write_json("prod.vars.json", {"HOST": "prod.example.com"})
+    doc_path = write_json("doc.json", {"endpoint": "https://${HOST}:${PORT}"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = configure_jsons(
+        [doc_path],
+        dbutils=mock_dbutils,
+        var_filepaths=[base_path, prod_path],
+        defaults={"HOST": "default.example.com"},
+    )
+
+    assert result == {"endpoint": "https://prod.example.com:80"}
+    # Only the second file redefines a merged name (the default HOST); the first adds PORT.
+    warning.assert_called_once()
+    message = warning.call_args.args[0] % warning.call_args.args[1:]
+    assert "HOST" in message and "prod.vars.json" in message
+
+
 def test_seq_array_gold_file(mock_dbutils):
     """Resolve committed config.json against vars.json and compare to the gold expected.json.
 

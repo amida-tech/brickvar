@@ -10,14 +10,18 @@ secrets via `dbutils.secrets`) and substitutes them into JSON config files. It h
 
 ## Public API
 
-- **`VariableResolver`** — `read_variables(filepath)`, `read_json(filepath, var_filepath=None)`,
-  and `read_jsons(filepaths, var_filepaths=None)` (since 0.0.4 — merges multiple files).
-  (Renamed from `ConfigManager`, since 0.0.4 — no back-compat alias.)
+- **`VariableResolver`** — `read_variables(filepath, *, defaults=None)`,
+  `read_json(filepath, var_filepath=None, *, defaults=None)`, and
+  `read_jsons(filepaths, var_filepaths=None, *, defaults=None)` (since 0.0.4 — merges multiple
+  files). (Renamed from `ConfigManager`, since 0.0.4 — no back-compat alias.)
 - Module-level helper **`unresolved_variables(content, provided)`**.
-- Package-level convenience **`configure_json(filepath, *, dbutils=None, var_filepath=None)`**
-  (since 0.0.2) — instantiates a `VariableResolver` and calls `read_json` in one step.
-- Package-level **`configure_jsons(filepaths, *, dbutils=None, var_filepaths=None)`**
-  (since 0.0.4) — merges several config files and/or variables files in one call. Variables
+- Package-level convenience **`configure_json(filepath, *, dbutils=None, **kwargs)`**
+  (since 0.0.2) — instantiates a `VariableResolver` and calls `read_json` in one step; `**kwargs`
+  (`var_filepath`, `defaults`) passes straight through, so the wrapper never has to track
+  `read_json`'s signature.
+- Package-level **`configure_jsons(filepaths, *, dbutils=None, **kwargs)`**
+  (since 0.0.4) — merges several config files and/or variables files in one call; `**kwargs`
+  (`var_filepaths`, `defaults`) passes through to `read_jsons`. Variables
   files are merged **before** resolution (so a variable may reference one from an earlier
   file; name conflicts: later file wins, with a warning). Config files are **deep**-merged
   (since 0.0.5): nested objects merge key by key, lists **concatenate** (later file's items
@@ -62,6 +66,26 @@ Each entry maps a name to one of:
 Resolution is two-pass, so a secret's `scope`/`key` can reference already-resolved literal
 or environment values. Unknown `${VAR}` placeholders are left intact.
 
+A value that matches none of these forms (a number, a bool, a list) can't be substituted and is
+skipped; since 0.0.8 it logs an **error** naming the variable and its type instead of being
+dropped silently. Supporting non-string scalars (an `int`/`float`/`bool` emitted via `json.dumps`
+on a complete `"${VAR}"`, like `null` and `seq` arrays) is deferred **future work** — it matters
+most for `defaults`, where writing `{"RETRIES": 3}` in Python is natural.
+
+### Default variables in code (since 0.0.8)
+
+The read methods take a keyword-only **`defaults`** mapping of the same entry forms as a
+variables file, supplied in code (`configure_json`/`configure_jsons` forward it through
+`**kwargs`). It is the **bottom layer**: `_merge_raw_variables` seeds the merged raw specs from
+`dict(defaults or {})` (a copy — the caller's mapping is never mutated), then merges the variables
+files over it, so a name a file also defines takes the file's value and one no file defines is
+added. The merged specs are resolved in the usual single two-pass run, so a file entry may
+reference a default; a default referencing a file-only variable resolves before that name exists
+and keeps its placeholder. `defaults` works with no variables file at all — `read_json`/`read_jsons`
+substitute when *either* source is present. One logging rule covers both layers: a variables file
+that redefines an already-merged name → `warning`, whether that name came from a default or from an
+earlier file.
+
 ## Repo & layout
 
 - `https://github.com/amida-tech/brickvar` (public, Apache-2.0).
@@ -71,17 +95,18 @@ or environment values. Unknown `${VAR}` placeholders are left intact.
 
 ## Current status
 
-- `pytest`: **55 passing**. `python -m build` + `twine check dist/*`: passing.
-- Version bumped to **0.0.7** (release in progress): `seq` gains an **`as`** key — `"array"`
-  splices a sequence as sibling elements into the enclosing JSON array (vs. the default
-  `"string"`, a delimited string). Acts like `null`: only on a complete `"${VAR}"` value.
-  Also: `seq` `count` must now be **positive** (0 raises, was allowed in 0.0.6).
-- Latest on PyPI: **0.0.6** (https://pypi.org/project/brickvar/) — `seq` counter-sequence
-  variable type (a single delimited string from one variable), plus raise-on-invalid-shape
-  validation for secret and mutually-exclusive `env`/`seq` entries.
-- Prior release 0.0.5 — deep-merge for `read_jsons` / `configure_jsons` (dicts merge, lists
-  concatenate, scalars last-wins, mismatched containers raise, null↔container is a warned
-  last-wins override).
+- `pytest`: **67 passing** (100% statement coverage). `python -m build` + `twine check dist/*`: passing.
+- Unreleased on `feature/default-variables` (version bumped to **0.0.8**): keyword-only
+  **`defaults`** mapping on all read/configure entry points (base layer under the variables
+  files), an error log for a variable value matching no entry form, and a README catch-up on
+  `seq`/`as` and the 0.0.5 deep merge.
+- Latest on PyPI: **0.0.7** (https://pypi.org/project/brickvar/) — `seq` gains an **`as`** key:
+  `"array"` splices a sequence as sibling elements into the enclosing JSON array (vs. the default
+  `"string"`, a delimited string), acting like `null` on a complete `"${VAR}"` value; and `seq`
+  `count` must now be **positive** (0 raises, was allowed in 0.0.6).
+- Prior release 0.0.6 — `seq` counter-sequence variable type (a single delimited string from one
+  variable), plus raise-on-invalid-shape validation for secret and mutually-exclusive `env`/`seq`
+  entries.
 
 ## Dev setup
 
