@@ -96,14 +96,16 @@ earlier file.
 ## Current status
 
 - `pytest`: **67 passing** (100% statement coverage). `python -m build` + `twine check dist/*`: passing.
-- Unreleased on `feature/default-variables` (version bumped to **0.0.8**): keyword-only
-  **`defaults`** mapping on all read/configure entry points (base layer under the variables
-  files), an error log for a variable value matching no entry form, and a README catch-up on
+- Latest on PyPI: **0.0.8** (https://pypi.org/project/brickvar/) — keyword-only **`defaults`**
+  mapping on every read/configure entry point: a base layer of variable specs given in code under
+  the variables files (a file defining the same name wins, with a warning; usable with no variables
+  file at all). Also: an **error** log for a variable value matching no entry form (was dropped
+  silently), `**kwargs` pass-through in `configure_json`/`configure_jsons`, and a README catch-up on
   `seq`/`as` and the 0.0.5 deep merge.
-- Latest on PyPI: **0.0.7** (https://pypi.org/project/brickvar/) — `seq` gains an **`as`** key:
-  `"array"` splices a sequence as sibling elements into the enclosing JSON array (vs. the default
-  `"string"`, a delimited string), acting like `null` on a complete `"${VAR}"` value; and `seq`
-  `count` must now be **positive** (0 raises, was allowed in 0.0.6).
+- Prior release 0.0.7 — `seq` gains an **`as`** key: `"array"` splices a sequence as sibling
+  elements into the enclosing JSON array (vs. the default `"string"`, a delimited string), acting
+  like `null` on a complete `"${VAR}"` value; and `seq` `count` must be **positive** (0 raises, was
+  allowed in 0.0.6).
 - Prior release 0.0.6 — `seq` counter-sequence variable type (a single delimited string from one
   variable), plus raise-on-invalid-shape validation for secret and mutually-exclusive `env`/`seq`
   entries.
