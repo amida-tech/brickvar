@@ -7,6 +7,7 @@ variables, and Azure Key Vault secrets, and substitute them into JSON config fil
 
 - a **literal** string (which may reference other variables with `${VAR}`),
 - **`null`**, which substitutes a JSON `null` into the config file,
+- a **number** or **boolean** (`3`, `0.5`, `true`), which substitutes that bare JSON value,
 - an **environment variable** reference — `{"env": "NAME"}`,
 - a **Databricks / Azure Key Vault secret** — `{"scope": ..., "key": ..., "base"?: ...}`,
   read through the Databricks `dbutils.secrets` API, or
@@ -21,6 +22,12 @@ A `null` variable substitutes a real JSON `null`. Because substitution is textua
 its placeholder must be a complete string value — `"${VAR}"` becomes `null` (quotes
 and all). A null variable embedded in a larger string (`"prefix-${VAR}"`) cannot
 become null and is left intact with a warning.
+
+Numbers and booleans work the same way: `"${RETRIES}"` with `RETRIES` set to `3` becomes
+`3`, and with `true` becomes `true` — the config gets a real JSON number or boolean, not
+a string. This is most convenient for `defaults` given in code, e.g.
+`defaults={"RETRIES": 3, "DEBUG": False}`. Embedded in a larger string, such a variable
+is likewise left intact with a warning.
 
 ### Counter sequences
 

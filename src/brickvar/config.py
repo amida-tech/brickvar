@@ -37,8 +37,9 @@ class VariableResolver:
     def read_variables(self, filepath: str, *, defaults: dict = None) -> dict:
         """Read configuration variables from a JSON file.
 
-        Each entry maps a name to a value given in one of five forms: a literal string; JSON
-        ``null`` (resolved to ``None``); an environment-variable reference ``{"env": "NAME"}``
+        Each entry maps a name to a value given in one of six forms: a literal string; JSON
+        ``null`` (resolved to ``None``); a number or boolean (kept as the ``int``/``float``/``bool``);
+        an environment-variable reference ``{"env": "NAME"}``
         resolved from os.environ; an Azure Key Vault secret
         ``{"scope": ..., "key": ..., "base"?: ...}`` read via dbutils; or a counter sequence
         ``{"seq": ..., "count": ..., "start"?: ..., "step"?: ..., "sep"?: ..., "as"?: ...}``
@@ -98,17 +99,20 @@ class VariableResolver:
         """
         result = {}
 
-        # First pass: literal, null, and environment values, which secret entries may reference.
+        # First pass: literal, null, scalar, and environment values, which secret entries may
+        # reference.
         for var_name, var_spec in content.items():
             if isinstance(var_spec, str):
                 # Only string values can be embedded in another string, so restrict the
-                # cross-reference mapping to them; null- and array-valued variables are omitted
-                # and their ${VAR} placeholders are left intact here.
+                # cross-reference mapping to them; null-, scalar- and array-valued variables are
+                # omitted and their ${VAR} placeholders are left intact here.
                 result[var_name] = Template(var_spec).safe_substitute(
                     **{name: value for name, value in result.items() if isinstance(value, str)}
                 )
-            elif var_spec is None:
-                result[var_name] = None
+            elif var_spec is None or isinstance(var_spec, (bool, int, float)):
+                # null and number/boolean scalars keep their type; _substitute emits them as bare
+                # JSON values on a complete "${VAR}" placeholder.
+                result[var_name] = var_spec
             elif isinstance(var_spec, dict) and "env" in var_spec:
                 extra = set(var_spec) - {"env"}
                 if "seq" in extra:
@@ -120,11 +124,11 @@ class VariableResolver:
                 result[var_name] = self._resolve_seq(var_name, var_spec, result)
             elif not isinstance(var_spec, dict):
                 # Any other dict is a secret entry, handled by the second pass. A non-dict that
-                # is not a string or null (a number, a bool, a list) matches no entry form and
+                # is not a string, null, number or bool (e.g. a list) matches no entry form and
                 # cannot be substituted, so it is dropped -- log it rather than skip in silence.
                 logger.error(
-                    "Variable %r: unsupported value of type %s (expected a string, null, or an "
-                    "env/secret/seq object); variable skipped",
+                    "Variable %r: unsupported value of type %s (expected a string, number, bool, "
+                    "null, or an env/secret/seq object); variable skipped",
                     var_name,
                     type(var_spec).__name__,
                 )
@@ -216,7 +220,8 @@ class VariableResolver:
 
         A variable whose value is not a string acts on a *complete* JSON string value
         (``"${VAR}"`` or ``"$VAR"``), never one embedded in a larger string. A ``None`` becomes a
-        bare JSON ``null``. A ``seq`` array is spliced as comma-separated string elements into the
+        bare JSON ``null``, and a number or boolean its bare JSON literal (``3``, ``0.5``,
+        ``true``) via ``json.dumps``. A ``seq`` array is spliced as comma-separated string elements into the
         JSON array that holds the placeholder (``["OTHER", "${VAR}"]`` -> ``["OTHER", "a", "b"]``).
         Such a variable embedded in a larger string cannot be substituted and is left intact with a
         warning, as is any placeholder the variables file does not supply.
@@ -243,19 +248,23 @@ class VariableResolver:
         if unresolved:
             logger.warning("Unresolved variable(s) in %s: %s", filepath, ", ".join(unresolved))
         # Non-string values cannot be embedded in a larger string; each acts on a complete
-        # "${VAR}" placeholder. A null becomes a bare JSON ``null``. A seq array (a list, always
+        # "${VAR}" placeholder. A null, number or bool becomes its bare JSON literal (``null``,
+        # ``3``, ``true``) via json.dumps. A seq array (a list, always
         # non-empty since count must be positive) is spliced into its enclosing JSON array as
         # comma-separated string elements -- ["OTHER", "${VAR}"] -> ["OTHER", "a", "b"]. The
         # remaining string-valued variables are then textually substituted.
         str_vars = {name: value for name, value in variables.items() if isinstance(value, str)}
-        null_vars = [name for name, value in variables.items() if value is None]
+        scalar_vars = {
+            name: value for name, value in variables.items() if value is None or isinstance(value, (bool, int, float))
+        }
         array_vars = {name: value for name, value in variables.items() if isinstance(value, list)}
-        for name in null_vars:
-            content = content.replace(f'"${{{name}}}"', "null").replace(f'"${name}"', "null")
+        for name, value in scalar_vars.items():
+            literal = json.dumps(value)
+            content = content.replace(f'"${{{name}}}"', literal).replace(f'"${name}"', literal)
         for name, items in array_vars.items():
             elements = ", ".join(json.dumps(item) for item in items)
             content = content.replace(f'"${{{name}}}"', elements).replace(f'"${name}"', elements)
-        embedded = sorted((set(null_vars) | set(array_vars)) & set(unresolved_variables(content, str_vars)))
+        embedded = sorted((set(scalar_vars) | set(array_vars)) & set(unresolved_variables(content, str_vars)))
         if embedded:
             logger.warning(
                 "Non-string variable(s) embedded in a string in %s, left unresolved: %s",
