@@ -660,15 +660,112 @@ def test_read_variables_defaults_support_every_entry_form(mock_dbutils, monkeypa
 
 
 def test_read_variables_logs_error_for_unsupported_value_type(mock_dbutils, write_json, mocker):
-    """A value that is no valid entry form (e.g. a number) is skipped with an error logged."""
-    var_path = write_json("vars.json", {"RETRIES": 3, "HOST": "example.com"})
+    """A value that is no valid entry form (e.g. a list) is skipped with an error logged."""
+    var_path = write_json("vars.json", {"HOSTS": ["a", "b"], "HOST": "example.com"})
     error = mocker.patch("brickvar.config.logger.error")
 
     result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
 
     assert result == {"HOST": "example.com"}
     error.assert_called_once()
-    assert "RETRIES" in error.call_args.args[0] % error.call_args.args[1:]
+    assert "HOSTS" in error.call_args.args[0] % error.call_args.args[1:]
+
+
+def test_read_variables_scalars_keep_their_type(mock_dbutils, write_json, mocker):
+    """Number and boolean values are valid entries, resolved as-is (bool stays bool, not int)."""
+    var_path = write_json("vars.json", {"RETRIES": 3, "RATIO": 0.5, "VERBOSE": True, "DRY_RUN": False, "ZERO": 0})
+    error = mocker.patch("brickvar.config.logger.error")
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"RETRIES": 3, "RATIO": 0.5, "VERBOSE": True, "DRY_RUN": False, "ZERO": 0}
+    assert [type(result[name]) for name in ("RETRIES", "RATIO", "VERBOSE")] == [int, float, bool]
+    error.assert_not_called()
+
+
+def test_read_variables_literal_does_not_embed_scalar(mock_dbutils, write_json):
+    """Like null, a scalar is not substituted into another variable's string; its placeholder stays."""
+    var_path = write_json("vars.json", {"RETRIES": 3, "LABEL": "retries=${RETRIES}"})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_variables(var_path)
+
+    assert result == {"RETRIES": 3, "LABEL": "retries=${RETRIES}"}
+
+
+def test_read_json_substitutes_scalars(mock_dbutils, write_json, mocker):
+    """A number or boolean replaces a complete "${VAR}" string value with its bare JSON literal."""
+    var_path = write_json("vars.json", {"RETRIES": 3, "RATIO": 0.5, "VERBOSE": True, "DRY_RUN": False, "ZERO": 0})
+    doc_path = write_json(
+        "doc.json",
+        {
+            "retries": "${RETRIES}",
+            "sampling": {"ratio": "${RATIO}"},
+            "flags": ["${VERBOSE}", "${DRY_RUN}"],
+            "offset": "${ZERO}",
+        },
+    )
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"retries": 3, "sampling": {"ratio": 0.5}, "flags": [True, False], "offset": 0}
+    assert type(result["retries"]) is int and type(result["flags"][0]) is bool
+    warning.assert_not_called()
+
+
+def test_read_json_substitutes_scalar_unbraced(mock_dbutils, write_json):
+    """The unbraced "$VAR" form also becomes a bare JSON number or boolean."""
+    var_path = write_json("vars.json", {"RETRIES": 3, "VERBOSE": True})
+    doc_path = write_json("doc.json", {"retries": "$RETRIES", "verbose": "$VERBOSE"})
+
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"retries": 3, "verbose": True}
+
+
+def test_read_json_scalar_embedded_in_string_warns(mock_dbutils, write_json, mocker):
+    """A scalar embedded in a larger string cannot become a bare literal and is left intact with a warning."""
+    var_path = write_json("vars.json", {"RETRIES": 3, "HOST": "example.com"})
+    doc_path = write_json("doc.json", {"label": "retries-${RETRIES}", "endpoint": "https://${HOST}"})
+    warning = mocker.patch("brickvar.config.logger.warning")
+
+    result = VariableResolver(dbutils=mock_dbutils).read_json(doc_path, var_path)
+
+    assert result == {"label": "retries-${RETRIES}", "endpoint": "https://example.com"}
+    warning.assert_called_once()
+    assert "RETRIES" in warning.call_args.args[-1]
+
+
+def test_configure_json_scalar_defaults(write_json, mocker):
+    """Scalar defaults given in code -- the natural {"RETRIES": 3} -- substitute without a variables file."""
+    doc_path = write_json("doc.json", {"max_retries": "${RETRIES}", "debug": "${DEBUG}", "timeout": "${TIMEOUT}"})
+    error = mocker.patch("brickvar.config.logger.error")
+
+    result = configure_json(doc_path, defaults={"RETRIES": 3, "DEBUG": False, "TIMEOUT": 1.5})
+
+    assert result == {"max_retries": 3, "debug": False, "timeout": 1.5}
+    error.assert_not_called()
+
+
+def test_configure_json_scalar_default_overridden_by_variables_file(write_json):
+    """A variables file may override a scalar default, with any entry form (here another number)."""
+    var_path = write_json("vars.json", {"RETRIES": 5})
+    doc_path = write_json("doc.json", {"max_retries": "${RETRIES}", "debug": "${DEBUG}"})
+
+    result = configure_json(doc_path, var_filepath=var_path, defaults={"RETRIES": 3, "DEBUG": True})
+
+    assert result == {"max_retries": 5, "debug": True}
+
+
+def test_configure_jsons_substitutes_scalars_across_files(write_json):
+    """Scalars substitute into every config file before the deep merge; a later file's scalar wins."""
+    var_path = write_json("vars.json", {"RETRIES": 3, "VERBOSE": True})
+    base_path = write_json("base.json", {"job": {"retries": "${RETRIES}", "verbose": False}})
+    override_path = write_json("override.json", {"job": {"verbose": "${VERBOSE}"}})
+
+    result = configure_jsons([base_path, override_path], var_filepaths=[var_path])
+
+    assert result == {"job": {"retries": 3, "verbose": True}}
 
 
 def test_read_variables_dict_entry_naming_no_secret_is_unset(mock_dbutils, write_json):

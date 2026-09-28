@@ -45,6 +45,10 @@ Each entry maps a name to one of:
 - **`null`** (since 0.0.3) — substitutes a real JSON `null`. The placeholder must be a
   complete string value `"${VAR}"`; an embedded `"prefix-${VAR}"` can't become null and is
   left intact with a warning,
+- a **number or boolean** (`int`/`float`/`bool`) — kept as-is and emitted via `json.dumps` on a
+  complete `"${VAR}"` (`3`, `0.5`, `true`), exactly like `null`; embedded in a larger string it's
+  left intact with a warning, and (like `null`) it is not substituted into another variable's
+  literal string,
 - an **environment variable** — `{"env": "NAME"}`,
 - a **Databricks / Azure Key Vault secret** — `{"scope": ..., "key": ..., "base"?: ...}`,
   read via `dbutils.secrets`.
@@ -66,11 +70,8 @@ Each entry maps a name to one of:
 Resolution is two-pass, so a secret's `scope`/`key` can reference already-resolved literal
 or environment values. Unknown `${VAR}` placeholders are left intact.
 
-A value that matches none of these forms (a number, a bool, a list) can't be substituted and is
-skipped; since 0.0.8 it logs an **error** naming the variable and its type instead of being
-dropped silently. Supporting non-string scalars (an `int`/`float`/`bool` emitted via `json.dumps`
-on a complete `"${VAR}"`, like `null` and `seq` arrays) is deferred **future work** — it matters
-most for `defaults`, where writing `{"RETRIES": 3}` in Python is natural.
+A value that matches none of these forms (e.g. a list) can't be substituted and is skipped; since
+0.0.8 it logs an **error** naming the variable and its type instead of being dropped silently.
 
 ### Default variables in code (since 0.0.8)
 
